@@ -1,0 +1,370 @@
+#!/usr/bin/env python3
+"""Full ESP32 emulator for testing the LeDashboard C++ server.
+
+Emulates the ESP32 firmware's serial protocol:
+  - Sends periodic HEARTBEAT (every 5s)
+  - Responds to HEARTBEAT with HEARTBEAT
+  - Receives TIME messages, stores and displays them, sends ACK
+  - Sends REQUEST(time_sync) on connect
+  - Sends ACK for any valid frame, NACK for CRC errors
+  - Optionally sends TOUCH events for testing
+
+Logs every frame (sent and received) with timestamps to both console and a log file.
+
+Protocol (docs/context/COMMUNICATION_PROTOCOL.md):
+  SOF(0xAA) | Type(1) | Length(2, BE) | Payload(N) | CRC16-CCITT(2, BE) | EOF(0x55)
+  Byte stuffing: ESC(0x5A) + (byte XOR 0xA5) for SOF/EOF/ESC in the frame body.
+
+Usage:
+  C:\\ProgramData\\anaconda3\\envs\\le_dashboard_env\\python.exe \\
+      server\\tools\\test_esp32_emulator.py --port COM6 [--baud 115200] [--log emulator.log]
+
+Typical setup: com0com virtual pair COM5 <-> COM6.
+  Server on COM5, emulator on COM6 (or vice versa).
+"""
+
+import argparse
+import datetime
+import os
+import sys
+import time
+
+import serial
+
+# =============================================================================
+# Protocol constants
+# =============================================================================
+
+SOF = 0xAA
+EOF = 0x55
+ESC = 0x5A
+
+HEARTBEAT    = 0x00
+TIME         = 0x01
+WEATHER      = 0x02
+MEDIA        = 0x03
+NOTIFICATION = 0x04
+PORTFOLIO    = 0x05
+SYSTEM       = 0x06
+CALENDAR     = 0x07
+ACK          = 0x08
+NACK         = 0x09
+ERROR        = 0x0A
+CONFIG       = 0x0B
+REQUEST      = 0x0C
+TOUCH        = 0x0D
+COMMAND      = 0x0E
+DEBUG        = 0x0F
+
+TYPE_NAMES = {
+    0x00: "HEARTBEAT", 0x01: "TIME", 0x02: "WEATHER", 0x03: "MEDIA",
+    0x04: "NOTIFICATION", 0x05: "PORTFOLIO", 0x06: "SYSTEM", 0x07: "CALENDAR",
+    0x08: "ACK", 0x09: "NACK", 0x0A: "ERROR", 0x0B: "CONFIG", 0x0C: "REQUEST",
+    0x0D: "TOUCH", 0x0E: "COMMAND", 0x0F: "DEBUG",
+}
+
+ERROR_NAMES = {
+    0x00: "SUCCESS", 0x01: "INVALID_FORMAT", 0x02: "CRC_ERROR", 0x03: "TIMEOUT",
+    0x04: "BUFFER_OVERFLOW", 0x05: "NOT_IMPLEMENTED", 0x06: "INVALID_STATE",
+    0x07: "RESOURCE_ERROR", 0x08: "COMMUNICATION_ERROR", 0x09: "PARSING_ERROR",
+}
+
+REQUEST_NAMES = {
+    0x00: "FULL_SYNC", 0x01: "TIME_SYNC", 0x02: "WEATHER_UPDATE",
+    0x03: "MEDIA_UPDATE", 0x04: "NOTIFICATION_LIST", 0x05: "PORTFOLIO_UPDATE",
+    0x06: "SYSTEM_UPDATE", 0x07: "CALENDAR_UPDATE", 0x08: "CONFIG",
+    0x09: "REBOOT", 0x0A: "FACTORY_RESET",
+}
+
+FRENCH_DAYS = ["lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi", "dimanche"]
+FRENCH_MONTHS = [
+    "janvier", "février", "mars", "avril", "mai", "juin",
+    "juillet", "août", "septembre", "octobre", "novembre", "décembre"
+]
+
+PROTO_MAJOR = 1
+PROTO_MINOR = 0
+
+# =============================================================================
+# CRC-16/CCITT
+# =============================================================================
+
+def crc16_ccitt(data: bytes, crc: int = 0x0000) -> int:
+    for b in data:
+        crc ^= b << 8
+        for _ in range(8):
+            if crc & 0x8000:
+                crc = ((crc << 1) ^ 0x1021) & 0xFFFF
+            else:
+                crc = (crc << 1) & 0xFFFF
+    return crc
+
+# =============================================================================
+# Frame encode / decode
+# =============================================================================
+
+def stuff(body: bytes) -> bytes:
+    out = bytearray()
+    for b in body:
+        if b in (SOF, EOF, ESC):
+            out.append(ESC)
+            out.append(b ^ 0xA5)
+        else:
+            out.append(b)
+    return bytes(out)
+
+def encode(msg_type: int, payload: bytes = b"") -> bytes:
+    body = bytes([msg_type]) + len(payload).to_bytes(2, "big") + payload
+    crc = crc16_ccitt(body)
+    body += crc.to_bytes(2, "big")
+    return bytes([SOF]) + stuff(body) + bytes([EOF])
+
+
+class FrameDecoder:
+    """Incremental frame decoder matching the C++ FrameDecoder."""
+
+    def __init__(self):
+        self.reset()
+
+    def reset(self):
+        self.state = "WAIT_SOF"
+        self.buf = bytearray()
+        self.length = 0
+        self.esc = False
+
+    def feed(self, data: bytes):
+        for raw in data:
+            if self.state == "WAIT_SOF":
+                if raw == SOF:
+                    self.reset()
+                    self.state = "READ_BODY"
+                continue
+            if self.esc:
+                b = raw ^ 0xA5
+                self.esc = False
+            elif raw == ESC:
+                self.esc = True
+                continue
+            elif raw == EOF and self.state == "EXPECT_EOF":
+                yield from self._finish()
+                continue
+            else:
+                b = raw
+            if self.state == "READ_BODY":
+                self.buf.append(b)
+                if len(self.buf) == 3:
+                    self.length = int.from_bytes(self.buf[1:3], "big")
+                    if self.length > 4095:
+                        self.reset()
+                        continue
+                if len(self.buf) == 3 + self.length + 2:
+                    self.state = "EXPECT_EOF"
+            else:
+                self.reset()
+                if b == SOF:
+                    self.state = "READ_BODY"
+
+    def _finish(self):
+        body = bytes(self.buf)
+        if len(body) < 5:
+            self.reset()
+            return
+        msg_type = body[0]
+        length = int.from_bytes(body[1:3], "big")
+        payload = body[3:3 + length]
+        received_crc = int.from_bytes(body[3 + length:5 + length], "big")
+        calc_crc = crc16_ccitt(body[:3 + length])
+        self.reset()
+        if calc_crc != received_crc:
+            yield ("crc_error", msg_type, payload)
+        else:
+            yield ("frame", msg_type, payload)
+
+
+# =============================================================================
+# Emulator
+# =============================================================================
+
+class Esp32Emulator:
+    def __init__(self, port: str, baud: int, log_path: str | None = None):
+        self.port = port
+        self.baud = baud
+        self.ser: serial.Serial | None = None
+        self.decoder = FrameDecoder()
+        self.hb_sequence = 0
+        self.last_hb_sent = 0.0
+        self.last_hb_received = 0.0
+        self.running = False
+        self.connected = False
+
+        # Current time state (updated from TIME messages)
+        self.current_time: dict | None = None
+
+        # Logging
+        self.log_file = None
+        if log_path:
+            self.log_file = open(log_path, "a", encoding="utf-8")
+
+    def log(self, msg: str):
+        """Log with timestamp to console and file."""
+        ts = datetime.datetime.now().strftime("%H:%M:%S.%f")[:-3]
+        line = f"[{ts}] {msg}"
+        print(line, flush=True)
+        if self.log_file:
+            self.log_file.write(line + "\n")
+            self.log_file.flush()
+
+    def send(self, msg_type: int, payload: bytes = b""):
+        frame = encode(msg_type, payload)
+        self.ser.write(frame)
+        name = TYPE_NAMES.get(msg_type, f"0x{msg_type:02X}")
+        detail = self._describe_payload(msg_type, payload)
+        self.log(f"--> {name} ({len(payload)}B) {detail}  raw={frame.hex()}")
+
+    def send_heartbeat(self):
+        payload = bytes([self.hb_sequence & 0xFF, PROTO_MAJOR, PROTO_MINOR])
+        self.hb_sequence += 1
+        self.send(HEARTBEAT, payload)
+        self.last_hb_sent = time.monotonic()
+
+    def send_ack(self, acked_type: int):
+        self.send(ACK, bytes([acked_type, 0]))
+
+    def send_nack(self, nacked_type: int, error_code: int):
+        self.send(NACK, bytes([nacked_type, error_code, 0]))
+
+    def send_time_request(self):
+        self.send(REQUEST, bytes([0x01]))  # 0x01 = TIME_SYNC
+
+    def send_touch(self, event: int, x: int, y: int):
+        payload = bytes([event, 1]) + x.to_bytes(2, "big") + y.to_bytes(2, "big") + bytes([128]) + int(time.time() * 1000).to_bytes(4, "big")
+        self.send(TOUCH, payload)
+
+    def _describe_payload(self, msg_type: int, payload: bytes) -> str:
+        if msg_type == TIME and len(payload) >= 8:
+            h, m, s, d, mo = payload[0], payload[1], payload[2], payload[3], payload[4]
+            # uint16_t year in packed struct is little-endian on x86/ESP32
+            yr = int.from_bytes(payload[5:7], "little")
+            dow = payload[7]
+            day_name = FRENCH_DAYS[dow] if 0 <= dow < 7 else "?"
+            month_name = FRENCH_MONTHS[mo - 1] if 1 <= mo <= 12 else "?"
+            return f"{h:02d}:{m:02d}:{s:02d} {day_name} {d} {month_name} {yr}"
+        if msg_type == HEARTBEAT and len(payload) >= 3:
+            return f"seq={payload[0]} proto={payload[1]}.{payload[2]}"
+        if msg_type == ACK and len(payload) >= 1:
+            return f"acked={TYPE_NAMES.get(payload[0], hex(payload[0]))}"
+        if msg_type == NACK and len(payload) >= 2:
+            return f"nacked={TYPE_NAMES.get(payload[0], hex(payload[0]))} err={ERROR_NAMES.get(payload[1], hex(payload[1]))}"
+        if msg_type == REQUEST and len(payload) >= 1:
+            return f"req={REQUEST_NAMES.get(payload[0], hex(payload[0]))}"
+        if payload:
+            return f"hex={payload[:32].hex()}{'...' if len(payload) > 32 else ''}"
+        return ""
+
+    def handle_frame(self, msg_type: int, payload: bytes):
+        name = TYPE_NAMES.get(msg_type, f"0x{msg_type:02X}")
+        detail = self._describe_payload(msg_type, payload)
+        self.log(f"<-- {name} ({len(payload)}B) {detail}")
+
+        if msg_type == HEARTBEAT:
+            self.last_hb_received = time.monotonic()
+            if not self.connected:
+                self.connected = True
+                self.log("*** CONNECTION ESTABLISHED (server heartbeat received) ***")
+                # Request initial time sync
+                self.send_time_request()
+            # Respond to server heartbeat (per protocol: ESP32 responds within 100ms)
+            self.send_heartbeat()
+
+        elif msg_type == TIME:
+            if len(payload) >= 8:
+                self.current_time = {
+                    "hour": payload[0], "minute": payload[1], "second": payload[2],
+                    "day": payload[3], "month": payload[4],
+                    "year": int.from_bytes(payload[5:7], "little"),  # LE in packed struct
+                    "dow": payload[7],
+                }
+                t = self.current_time
+                day_name = FRENCH_DAYS[t["dow"]] if 0 <= t["dow"] < 7 else "?"
+                month_name = FRENCH_MONTHS[t["month"] - 1] if 1 <= t["month"] <= 12 else "?"
+                self.log(f"    TIME SYNCED: {t['hour']:02d}:{t['minute']:02d}:{t['second']:02d} "
+                         f"{day_name} {t['day']} {month_name} {t['year']}")
+            self.send_ack(TIME)
+
+        else:
+            # ACK any other valid frame
+            self.send_ack(msg_type)
+
+    def handle_crc_error(self, msg_type: int):
+        self.log(f"<-- CRC ERROR on type=0x{msg_type:02X} -> NACK")
+        self.send_nack(msg_type, 0x02)
+
+    def run(self, duration: float | None = None):
+        self.ser = serial.Serial(self.port, self.baud, timeout=0.1)
+        self.running = True
+        self.last_hb_sent = time.monotonic()
+        self.last_hb_received = time.monotonic()
+        self.log(f"=== ESP32 Emulator started on {self.port} @ {self.baud} baud ===")
+        self.log(f"Protocol v{PROTO_MAJOR}.{PROTO_MINOR}, waiting for server...")
+
+        # Send initial heartbeat to announce presence
+        self.send_heartbeat()
+
+        start = time.monotonic()
+        try:
+            while self.running:
+                if duration and (time.monotonic() - start) > duration:
+                    self.log(f"Duration limit ({duration}s) reached, stopping.")
+                    break
+
+                # Read available data
+                data = self.ser.read(self.ser.in_waiting or 1)
+                if data:
+                    for result in self.decoder.feed(data):
+                        if result[0] == "frame":
+                            self.handle_frame(result[1], result[2])
+                        elif result[0] == "crc_error":
+                            self.handle_crc_error(result[1])
+
+                # Send periodic heartbeat (every 5s) — acts as keep-alive from ESP32 side too
+                now = time.monotonic()
+                if now - self.last_hb_sent >= 5.0:
+                    self.send_heartbeat()
+
+                # Check connection timeout (15s without server heartbeat)
+                if self.connected and (now - self.last_hb_received) > 15.0:
+                    self.connected = False
+                    self.log("*** CONNECTION LOST (no server heartbeat for 15s) ***")
+
+        except KeyboardInterrupt:
+            self.log("Interrupted by user (Ctrl+C)")
+        finally:
+            self.running = False
+            self.ser.close()
+            self.log("=== ESP32 Emulator stopped ===")
+            if self.log_file:
+                self.log_file.close()
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description="ESP32 emulator for LeDashboard server testing")
+    ap.add_argument("--port", required=True, help="COM port (e.g. COM6)")
+    ap.add_argument("--baud", type=int, default=115200)
+    ap.add_argument("--log", default=None, help="Log file path (default: emulator_<port>.log)")
+    ap.add_argument("--duration", type=float, default=None, help="Run for N seconds then stop")
+    args = ap.parse_args()
+
+    log_path = args.log
+    if log_path is None:
+        log_path = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),
+            f"emulator_{args.port.replace(':', '')}.log"
+        )
+
+    emu = Esp32Emulator(args.port, args.baud, log_path)
+    emu.run(duration=args.duration)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

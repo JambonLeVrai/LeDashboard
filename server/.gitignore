@@ -1,0 +1,60 @@
+# C++ Build Artifacts
+build/
+build-ninja/
+vcpkg_installed/
+*.exe
+*.dll
+*.lib
+*.a
+*.so
+*.dylib
+
+# Visual Studio
+*.user
+*.userosscache
+*.sdf
+*.opensdf
+*.suo
+*.vcxproj.user
+*.vcxcproj.user
+*.aps
+*.pch
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+install_manifest.txt
+
+# IDE
+.vscode/
+.idea/
+
+# macOS
+.DS_Store
+
+# Windows
+Thumbs.db
+
+# Compilers
+*.o
+*.obj
+*.slo
+*.lo
+
+# Debug
+*.pdb
+*.idb
+*.ilk
+
+# Testing
+*.gcda
+*.gcno
+*.gcov
+
+# Local configuration
+config.local.toml
+
+# Python (tools/*.py)
+__pycache__/
+*.pyc

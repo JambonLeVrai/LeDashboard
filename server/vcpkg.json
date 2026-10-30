@@ -1,0 +1,14 @@
+{
+  "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
+  "name": "ledashboard-server",
+  "version": "1.0.0",
+  "builtin-baseline": "d186940b2f0c4e8e5b4ff804af57d2a26fbfa091",
+  "description": "LeDashboard host server - C++ application that aggregates data and talks to the ESP32 dashboard over USB serial",
+  "dependencies": [
+    "nlohmann-json",
+    "spdlog",
+    "cpr",
+    "lz4",
+    "doctest"
+  ]
+}

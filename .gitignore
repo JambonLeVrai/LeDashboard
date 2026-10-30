@@ -1,0 +1,51 @@
+# Build artifacts
+server/build/
+server/build-ninja/
+server/vcpkg_installed/
+firmware/.pio/
+firmware/.history/
+
+# Vendored vendor demo code (reference only)
+docs/4.0inch_ESP32-4848S040/
+
+# Binaries
+*.exe
+*.dll
+*.lib
+*.a
+*.so
+*.dylib
+*.bin
+*.elf
+*.o
+*.obj
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+*.vcxproj
+*.vcxproj.filters
+*.vcxproj.user
+*.sln
+
+# IDE
+.vscode/
+.idea/
+*.user
+*.suo
+
+# Python
+__pycache__/
+*.pyc
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local config (secrets)
+server/config/config.json
+server/config/settings.json
+*.pem
+*.key

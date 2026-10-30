@@ -1,0 +1,8 @@
+# Name,   Type, SubType, Offset,  Size, Flags
+# Note: if you have 'make partition_table' for custom partition table,
+#       the subtype and flags of app partitions will be updated automatically.
+
+nvs,      data, nvs,     0x9000,  0x5000,
+phy_init, data, phy,     0xe000,  0x1000,
+factory,  app,  factory, 0xf000,  0x100000,
+storage,  data, 0x99,    0x110000,0x1F0000,
