@@ -92,26 +92,49 @@ void DashboardServer::send_heartbeat() {
 
 TimeMessageBinary DashboardServer::build_time_message() const {
     TimeMessageBinary t{};
-    std::time_t now = std::time(nullptr);
+
+    // High-precision UTC timestamp in milliseconds
+    auto now = std::chrono::system_clock::now();
+    auto now_ms = std::chrono::time_point_cast<std::chrono::milliseconds>(now);
+    t.timestamp_ms = static_cast<uint64_t>(now_ms.time_since_epoch().count());
+
+    // Local time fields (for direct display)
+    std::time_t now_t = std::time(nullptr);
     std::tm tm_local{};
-    localtime_s(&tm_local, &now);
+    localtime_s(&tm_local, &now_t);
 
     t.hour        = static_cast<uint8_t>(tm_local.tm_hour);
     t.minute      = static_cast<uint8_t>(tm_local.tm_min);
     t.second      = static_cast<uint8_t>(tm_local.tm_sec);
     t.day         = static_cast<uint8_t>(tm_local.tm_mday);
-    t.month       = static_cast<uint8_t>(tm_local.tm_mon + 1);       // tm_mon is 0-based
+    t.month       = static_cast<uint8_t>(tm_local.tm_mon + 1);
     t.year        = static_cast<uint16_t>(tm_local.tm_year + 1900);
-    // tm_wday: 0=Sunday .. 6=Saturday → convert to 0=Monday .. 6=Sunday
-    t.day_of_week = static_cast<uint8_t>((tm_local.tm_wday + 6) % 7);
+    t.day_of_week = static_cast<uint8_t>((tm_local.tm_wday + 6) % 7); // 0=Mon..6=Sun
+
+    // Timezone offset from UTC in minutes (including DST if active)
+#ifdef _WIN32
+    TIME_ZONE_INFORMATION tzi{};
+    DWORD tz_result = GetTimeZoneInformation(&tzi);
+    int16_t bias = static_cast<int16_t>(tzi.Bias); // minutes behind UTC
+    if (tz_result == TIME_ZONE_ID_DAYLIGHT) {
+        bias += static_cast<int16_t>(tzi.DaylightBias);
+    }
+    t.timezone_min = static_cast<int16_t>(-bias); // convert to "minutes east of UTC"
+    t.dst_flag = (tz_result == TIME_ZONE_ID_DAYLIGHT) ? 1 : 0;
+#else
+    t.timezone_min = 0;
+    t.dst_flag = 0;
+#endif
+
     return t;
 }
 
 void DashboardServer::send_time() {
     TimeMessageBinary t = build_time_message();
     send_frame(MsgType::TIME, reinterpret_cast<const uint8_t *>(&t), sizeof(t));
-    spdlog::debug("-> TIME {:02d}:{:02d}:{:02d} {:02d}/{:02d}/{:04d} dow={}",
-                  t.hour, t.minute, t.second, t.day, t.month, t.year, t.day_of_week);
+    spdlog::debug("-> TIME {:02d}:{:02d}:{:02d} {:02d}/{:02d}/{:04d} dow={} ts_ms={}",
+                  t.hour, t.minute, t.second, t.day, t.month, t.year, t.day_of_week,
+                  t.timestamp_ms);
 }
 
 void DashboardServer::send_ack(MsgType acked_type) {

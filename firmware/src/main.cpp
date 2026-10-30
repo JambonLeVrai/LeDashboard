@@ -74,6 +74,14 @@ WeatherData current_weather;
 // True once we receive the first TIME message from the server
 static bool time_synced_from_server = false;
 
+// Millisecond-precision sync state:
+// When a TIME message arrives, we record the server's UTC timestamp (ms) and
+// our local millis() at reception. Current server time is then:
+//   server_now_ms = server_ts_ms + (millis() - local_rx_millis)
+static uint64_t server_ts_ms = 0;       // server UTC timestamp in ms
+static int16_t  server_tz_min = 0;       // server timezone offset (minutes east of UTC)
+static uint32_t local_rx_millis = 0;     // millis() when last TIME was received
+
 // Global label references for updating
 lv_obj_t *time_label = NULL;
 lv_obj_t *date_label = NULL;
@@ -143,8 +151,15 @@ void update_date_display() {
   }
 }
 
-// Called by SerialHandler when a TIME message arrives from the server
+// Called by SerialHandler when a TIME message arrives from the server.
+// Uses the millisecond timestamp for sub-second sync precision.
 void on_server_time(const TimeMessageBinary *t) {
+  // Record sync anchor: server UTC ms + our local millis at reception
+  server_ts_ms     = t->timestamp_ms;
+  server_tz_min    = t->timezone_min;
+  local_rx_millis  = millis();
+
+  // Also set the display fields from the pre-computed local time
   current_time.hour        = t->hour;
   current_time.minute      = t->minute;
   current_time.second      = t->second;
@@ -157,45 +172,72 @@ void on_server_time(const TimeMessageBinary *t) {
   update_date_display();
 }
 
+// Compute current server-local time in milliseconds since Unix epoch,
+// using the ms-precision anchor. Returns ms since epoch in local time.
+static uint64_t get_server_local_ms() {
+  uint64_t utc_now = server_ts_ms + (uint64_t)(millis() - local_rx_millis);
+  // Apply timezone offset (minutes east of UTC → ms)
+  return utc_now + (uint64_t)server_tz_min * 60ULL * 1000ULL;
+}
+
+// Convert Unix epoch ms (local) to broken-down time fields.
+// Uses a simple civil-from-days algorithm (no libc time functions needed).
+static void ms_to_datetime(uint64_t epoch_ms, TimeData *out) {
+  // Days since 1970-01-01
+  uint64_t days = epoch_ms / 86400000ULL;
+  uint64_t rem_ms = epoch_ms % 86400000ULL;
+
+  out->hour   = (uint8_t)(rem_ms / 3600000ULL);
+  out->minute = (uint8_t)((rem_ms % 3600000ULL) / 60000ULL);
+  out->second = (uint8_t)((rem_ms % 60000ULL) / 1000ULL);
+
+  // Civil from days (Howard Hinnant's algorithm)
+  // Shift epoch to 1970-03-01 to simplify leap year handling
+  int64_t z = (int64_t)days + 719468;
+  int64_t era = (z >= 0 ? z : z - 146096) / 146097;
+  uint32_t doe = (uint32_t)(z - era * 146097);          // [0, 146096]
+  uint32_t yoe = (doe - doe/1460 + doe/36524 - doe/146096) / 365; // [0, 399]
+  int64_t y = (int64_t)yoe + era * 400;
+  uint32_t doy = doe - (365*yoe + yoe/4 - yoe/100);     // [0, 365]
+  uint32_t mp = (5*doy + 2)/153;                         // [0, 11]
+  uint32_t d = doy - (153*mp+2)/5 + 1;                   // [1, 31]
+  uint32_t m = mp < 10 ? mp+3 : mp-9;                    // [1, 12]
+  if (m <= 2) y += 1;
+
+  out->day   = (uint8_t)d;
+  out->month = (uint8_t)m;
+  out->year  = (uint16_t)y;
+  // Day of week: 1970-01-01 was Thursday (4). 0=Monday..6=Sunday
+  out->day_of_week = (uint8_t)((days + 3) % 7);
+}
+
 // Called when connection state changes
 void on_conn_state(connection_state_t s) {
   const char *names[] = {"IDLE", "CONNECTED", "LOST"};
   Serial.printf("[MAIN] Server connection: %s\n", names[(int)s]);
 }
 
-// Advance time locally by one second (called every loop when synced).
-// The server sends a full TIME update periodically; between updates we tick locally.
+// Advance time display using millisecond-precise server sync.
+// Called every loop iteration; updates the label only when the second changes.
 void tick_local_time() {
-  static uint32_t last_tick = 0;
-  uint32_t now = millis();
-  if (now - last_tick >= 1000) {
-    last_tick = now;
-    current_time.second++;
-    if (current_time.second >= 60) {
-      current_time.second = 0;
-      current_time.minute++;
-      if (current_time.minute >= 60) {
-        current_time.minute = 0;
-        current_time.hour++;
-        if (current_time.hour >= 24) {
-          current_time.hour = 0;
-          // Day rollover — day_of_week advances
-          current_time.day_of_week = (current_time.day_of_week + 1) % 7;
-          current_time.day++;
-          // Simplified: assume 31-day months for now; server will correct
-          uint8_t days_in_month[] = {31,28,31,30,31,30,31,31,30,31,30,31};
-          if (current_time.day > days_in_month[current_time.month - 1]) {
-            current_time.day = 1;
-            current_time.month++;
-            if (current_time.month > 12) {
-              current_time.month = 1;
-              current_time.year++;
-            }
-          }
-        }
-      }
-    }
+  if (!time_synced_from_server) return;
+
+  uint64_t local_ms = get_server_local_ms();
+  TimeData t;
+  ms_to_datetime(local_ms, &t);
+
+  // Only update if the second changed (avoids unnecessary LVGL redraws)
+  if (t.second != current_time.second || t.minute != current_time.minute || t.hour != current_time.hour) {
+    current_time.hour        = t.hour;
+    current_time.minute      = t.minute;
+    current_time.second      = t.second;
+    current_time.day         = t.day;
+    current_time.month       = t.month;
+    current_time.year        = t.year;
+    current_time.day_of_week = t.day_of_week;
     update_time_display();
+    // Date only changes at midnight
+    update_date_display();
   }
 }
 

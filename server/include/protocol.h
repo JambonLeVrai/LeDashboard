@@ -96,14 +96,18 @@ private:
 
 #pragma pack(push, 1)
 struct TimeMessageBinary {
-    uint8_t  hour;
-    uint8_t  minute;
-    uint8_t  second;
-    uint8_t  day;
-    uint8_t  month;
-    uint16_t year;
-    uint8_t  day_of_week;  // 0=Monday .. 6=Sunday
-};
+    uint64_t timestamp_ms;    // 8 bytes — Unix timestamp in milliseconds (UTC)
+    int16_t  timezone_min;    // 2 bytes — local timezone offset from UTC in minutes
+    uint8_t  dst_flag;        // 1 byte  — DST active (0/1)
+    // Pre-computed local time fields for direct display:
+    uint8_t  hour;            // 1 byte
+    uint8_t  minute;          // 1 byte
+    uint8_t  second;          // 1 byte
+    uint8_t  day;             // 1 byte
+    uint8_t  month;           // 1 byte
+    uint16_t year;            // 2 bytes (little-endian in packed struct)
+    uint8_t  day_of_week;     // 1 byte  — 0=Monday .. 6=Sunday
+};  // total: 18 bytes
 
 struct HeartbeatMessage {
     uint8_t sequence;

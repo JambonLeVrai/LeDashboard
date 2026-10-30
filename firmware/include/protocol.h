@@ -108,14 +108,17 @@ unsigned int decoder_feed(frame_decoder_t *dec, const uint8_t *data, unsigned in
 // Time message
 #pragma pack(push, 1)
 typedef struct {
-    uint8_t hour;
-    uint8_t minute;
-    uint8_t second;
-    uint8_t day;
-    uint8_t month;
-    uint16_t year;
-    uint8_t day_of_week;  // 0=Monday, 6=Sunday (or configurable)
-} TimeMessageBinary;
+    uint64_t timestamp_ms;    // 8 bytes — Unix timestamp in milliseconds (UTC)
+    int16_t  timezone_min;    // 2 bytes — local timezone offset from UTC in minutes
+    uint8_t  dst_flag;        // 1 byte  — DST active (0/1)
+    uint8_t  hour;            // 1 byte  — pre-computed local time fields
+    uint8_t  minute;          // 1 byte
+    uint8_t  second;          // 1 byte
+    uint8_t  day;             // 1 byte
+    uint8_t  month;           // 1 byte
+    uint16_t year;            // 2 bytes (little-endian)
+    uint8_t  day_of_week;     // 1 byte  — 0=Monday .. 6=Sunday
+} TimeMessageBinary;          // total: 18 bytes
 
 // Heartbeat message
 typedef struct {

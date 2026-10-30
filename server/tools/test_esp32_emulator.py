@@ -241,14 +241,21 @@ class Esp32Emulator:
         self.send(TOUCH, payload)
 
     def _describe_payload(self, msg_type: int, payload: bytes) -> str:
-        if msg_type == TIME and len(payload) >= 8:
-            h, m, s, d, mo = payload[0], payload[1], payload[2], payload[3], payload[4]
-            # uint16_t year in packed struct is little-endian on x86/ESP32
-            yr = int.from_bytes(payload[5:7], "little")
-            dow = payload[7]
+        if msg_type == TIME and len(payload) >= 19:
+            # New format: uint64 timestamp_ms (LE) + int16 tz_min (LE) + uint8 dst
+            #             + hour + minute + second + day + month + uint16 year (LE) + dow
+            ts_ms = int.from_bytes(payload[0:8], "little")
+            tz_min = int.from_bytes(payload[8:10], "little", signed=True)
+            dst = payload[10]
+            h, m, s, d, mo = payload[11], payload[12], payload[13], payload[14], payload[15]
+            yr = int.from_bytes(payload[16:18], "little")
+            dow = payload[18] if len(payload) > 18 else 0
             day_name = FRENCH_DAYS[dow] if 0 <= dow < 7 else "?"
             month_name = FRENCH_MONTHS[mo - 1] if 1 <= mo <= 12 else "?"
-            return f"{h:02d}:{m:02d}:{s:02d} {day_name} {d} {month_name} {yr}"
+            # Show UTC time from timestamp for verification
+            utc_dt = datetime.datetime.fromtimestamp(ts_ms / 1000.0, tz=datetime.timezone.utc)
+            return (f"{h:02d}:{m:02d}:{s:02d} {day_name} {d} {month_name} {yr} "
+                    f"(ts_ms={ts_ms} utc={utc_dt.strftime('%H:%M:%S')} tz={tz_min:+d} dst={dst})")
         if msg_type == HEARTBEAT and len(payload) >= 3:
             return f"seq={payload[0]} proto={payload[1]}.{payload[2]}"
         if msg_type == ACK and len(payload) >= 1:
@@ -277,18 +284,24 @@ class Esp32Emulator:
             self.send_heartbeat()
 
         elif msg_type == TIME:
-            if len(payload) >= 8:
+            if len(payload) >= 19:
+                ts_ms = int.from_bytes(payload[0:8], "little")
+                tz_min = int.from_bytes(payload[8:10], "little", signed=True)
                 self.current_time = {
-                    "hour": payload[0], "minute": payload[1], "second": payload[2],
-                    "day": payload[3], "month": payload[4],
-                    "year": int.from_bytes(payload[5:7], "little"),  # LE in packed struct
-                    "dow": payload[7],
+                    "timestamp_ms": ts_ms,
+                    "tz_min": tz_min,
+                    "hour": payload[11], "minute": payload[12], "second": payload[13],
+                    "day": payload[14], "month": payload[15],
+                    "year": int.from_bytes(payload[16:18], "little"),
+                    "dow": payload[18] if len(payload) > 18 else 0,
                 }
                 t = self.current_time
                 day_name = FRENCH_DAYS[t["dow"]] if 0 <= t["dow"] < 7 else "?"
                 month_name = FRENCH_MONTHS[t["month"] - 1] if 1 <= t["month"] <= 12 else "?"
+                utc_dt = datetime.datetime.fromtimestamp(ts_ms / 1000.0, tz=datetime.timezone.utc)
                 self.log(f"    TIME SYNCED: {t['hour']:02d}:{t['minute']:02d}:{t['second']:02d} "
-                         f"{day_name} {t['day']} {month_name} {t['year']}")
+                         f"{day_name} {t['day']} {month_name} {t['year']} "
+                         f"(utc={utc_dt.strftime('%H:%M:%S')} ts_ms={ts_ms})")
             self.send_ack(TIME)
 
         else:
