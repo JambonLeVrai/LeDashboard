@@ -35,7 +35,8 @@ void SerialHandler::begin(unsigned long baud_rate) {
 }
 
 void SerialHandler::send_frame(uint8_t msg_type, const uint8_t *payload, unsigned int len) {
-    uint8_t buf[MAX_PAYLOAD_SIZE * 2 + FRAME_OVERHEAD + 2];
+    // Static buffer — avoid stack overflow (ESP32 loop task stack is ~8KB)
+    static uint8_t buf[MAX_PAYLOAD_SIZE * 2 + FRAME_OVERHEAD + 2];
     unsigned int n = encode_frame(msg_type, payload, len, buf, sizeof(buf));
     if (n > 0) {
         Serial.write(buf, n);

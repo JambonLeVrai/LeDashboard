@@ -97,7 +97,8 @@ unsigned int encode_frame(uint8_t msg_type, const uint8_t *payload, unsigned int
     out_buf[pos++] = SOF;
 
     // Build unstuffed body: type + length(BE) + payload + crc(BE)
-    uint8_t body[MAX_PAYLOAD_SIZE + 5];
+    // Static buffer — avoid stack overflow on ESP32 (loop task stack ~8KB)
+    static uint8_t body[MAX_PAYLOAD_SIZE + 5];
     body[0] = msg_type;
     body[1] = (payload_len >> 8) & 0xFF;
     body[2] = payload_len & 0xFF;
