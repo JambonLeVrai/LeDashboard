@@ -170,14 +170,19 @@ extern const char DISCOVER_ACK_PAYLOAD[]; // "LEDASHBOARD_ESP32_V1"
 
 #pragma pack(push, 1)
 struct SystemMessageBinary {
-    uint64_t timestamp_ms;   // 8 — server UTC ms
-    uint16_t cpu_x10;        // 2 — CPU usage % * 10 (0-1000 = 0-100.0%)
-    uint16_t gpu_x10;        // 2 — GPU usage % * 10
-    uint16_t ram_used_mb;    // 2 — RAM used in MB
-    uint16_t ram_total_mb;   // 2 — RAM total in MB
-    uint32_t net_up_kbps;    // 4 — upload KB/s
-    uint32_t net_down_kbps;  // 4 — download KB/s
-};  // total: 22 bytes
+    uint64_t timestamp_ms;      // 8 — server UTC ms
+    uint16_t cpu_x10;           // 2 — CPU usage % * 10
+    uint16_t cpu_temp_x10;      // 2 — CPU temp °C * 10
+    uint16_t gpu_x10;           // 2 — GPU usage % * 10
+    uint16_t gpu_temp_x10;      // 2 — GPU temp °C * 10
+    uint16_t ram_used_mb;       // 2 — RAM used MB
+    uint16_t ram_total_mb;      // 2 — RAM total MB
+    uint16_t disk_used_gb;      // 2 — disk C: used GB
+    uint16_t disk_total_gb;     // 2 — disk C: total GB
+    uint16_t mb_temp_x10;       // 2 — motherboard temp °C * 10
+    uint16_t net_up_mbps_x10;   // 2 — upload Mbps * 10
+    uint16_t net_down_mbps_x10; // 2 — download Mbps * 10
+};  // total: 24 bytes
 #pragma pack(pop)
 
 struct AckMessage {

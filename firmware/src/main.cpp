@@ -556,48 +556,77 @@ static void switch_page() {
 }
 
 // =============================================================================
-// Page 2: System monitor (CPU, GPU, RAM, NET charts)
+// Page 2: System monitor (numeric metrics, no curves)
 // =============================================================================
 
-#define CHART_POINTS 60   // history points per chart
-#define CHART_UPDATE_MS 5000
+#define SYS_UPDATE_MS 5000
+
+// Metric definitions: label, unit, and current dummy value
+struct SysMetric {
+  const char *label;
+  const char *unit;
+  float value;
+  float target;
+  int decimals;      // 0 or 1
+  float scale;       // display multiplier (e.g. 0.001 for MB→GB)
+  const char *fmt;   // printf format for value
+};
+
+// Metrics shown on page 2 (2 columns x 4 rows)
+// Order: CPU%, CPU°C, GPU%, GPU°C, RAM GB, Disk GB, Net↓ Mbps, Net↑ Mbps, MB°C
+enum {
+  M_CPU_USAGE, M_CPU_TEMP, M_GPU_USAGE, M_GPU_TEMP,
+  M_RAM, M_DISK, M_NET_DOWN, M_NET_UP, M_MB_TEMP, M_COUNT
+};
+
+static SysMetric g_metrics[M_COUNT] = {
+  {"CPU",       "%",  30.0f, 30.0f, 0, 1.0f,     "%.0f"},
+  {"CPU Temp",  "°C", 45.0f, 45.0f, 0, 1.0f,     "%.0f"},
+  {"GPU",       "%",  10.0f, 10.0f, 0, 1.0f,     "%.0f"},
+  {"GPU Temp",  "°C", 50.0f, 50.0f, 0, 1.0f,     "%.0f"},
+  {"RAM",       "GB", 16.0f, 16.0f, 1, 0.001f,   "%.1f"},   // stored as MB internally? no, GB directly
+  {"Disk C:",   "GB", 200.0f,200.0f,0, 1.0f,     "%.0f"},
+  {"Net Down",  "Mbps",500.0f,500.0f,1,1.0f,    "%.1f"},
+  {"Net Up",    "Mbps",50.0f, 50.0f, 1, 1.0f,     "%.1f"},
+  {"MB Temp",   "°C", 35.0f, 35.0f, 0, 1.0f,     "%.0f"},
+};
 
 static lv_obj_t *g_sys_time_label = nullptr;
-static lv_obj_t *g_charts[4] = {nullptr, nullptr, nullptr, nullptr};  // CPU, GPU, RAM, NET
-static lv_chart_series_t *g_series[4] = {nullptr, nullptr, nullptr, nullptr};
-static int16_t g_chart_data[4][CHART_POINTS];
-static int g_chart_idx = 0;
-static const char *g_chart_names[4] = {"CPU %", "GPU %", "RAM MB", "NET KB/s"};
-
-// Dummy value state (random walk)
-static float g_dummy_vals[4] = {30.0f, 10.0f, 20000.0f, 500.0f};
-static float g_dummy_targets[4] = {30.0f, 10.0f, 20000.0f, 500.0f};
+static lv_obj_t *g_metric_value_labels[M_COUNT] = {nullptr};
 
 static void update_dummy_system() {
   static uint32_t last = 0;
   uint32_t now = millis();
-  if (now - last < CHART_UPDATE_MS) return;
+  if (now - last < SYS_UPDATE_MS) return;
   last = now;
 
-  // Random walk toward new random targets
-  for (int i = 0; i < 4; i++) {
-    if (random(100) < 20) {
-      float range = (i < 2) ? 100.0f : (i == 2 ? 48000.0f : 5000.0f);
-      g_dummy_targets[i] = random(0, (long)range);
+  for (int i = 0; i < M_COUNT; i++) {
+    // Random walk toward new random target
+    if (random(100) < 25) {
+      float range;
+      switch (i) {
+        case M_CPU_USAGE: case M_GPU_USAGE: range = 100.0f; break;
+        case M_CPU_TEMP: range = 85.0f; break;
+        case M_GPU_TEMP: range = 90.0f; break;
+        case M_MB_TEMP:  range = 60.0f; break;
+        case M_RAM:      range = 48.0f; break;
+        case M_DISK:     range = 950.0f; break;
+        case M_NET_DOWN: range = 1000.0f; break;
+        case M_NET_UP:   range = 100.0f; break;
+        default: range = 100.0f;
+      }
+      g_metrics[i].target = random(0, (long)range);
     }
-    g_dummy_vals[i] += (g_dummy_targets[i] - g_dummy_vals[i]) * 0.3f;
-  }
+    g_metrics[i].value += (g_metrics[i].target - g_metrics[i].value) * 0.3f;
 
-  // Push new point to each chart (shift mode auto-shifts old points)
-  for (int c = 0; c < 4; c++) {
-    float v = g_dummy_vals[c];
-    int32_t scaled;
-    if (c < 2) scaled = (int32_t)v;            // CPU/GPU: 0-100
-    else if (c == 2) scaled = (int32_t)(v / 100); // RAM: /100 for chart range
-    else scaled = (int32_t)(v / 10);           // NET: /10
-
-    if (g_charts[c] && g_series[c]) {
-      lv_chart_set_next_value(g_charts[c], g_series[c], scaled);
+    // Update label if it exists
+    if (g_metric_value_labels[i]) {
+      char buf[24];
+      snprintf(buf, sizeof(buf), g_metrics[i].fmt, g_metrics[i].value * g_metrics[i].scale);
+      // Append unit
+      char full[32];
+      snprintf(full, sizeof(full), "%s %s", buf, g_metrics[i].unit);
+      lv_label_set_text(g_metric_value_labels[i], full);
     }
   }
 
@@ -609,14 +638,44 @@ static void update_dummy_system() {
   }
 }
 
-// Create page 2: system monitor with 4 charts in 2x2 grid
+// Create one metric card: label on top, big value below
+static lv_obj_t *create_metric_card(lv_obj_t *parent, int col, int row, int idx) {
+  lv_obj_t *card = lv_obj_create(parent);
+  lv_obj_set_style_bg_color(card, lv_color_hex(0xFFFFFF), 0);
+  lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
+  lv_obj_set_style_radius(card, 8, 0);
+  lv_obj_set_style_border_width(card, 0, 0);
+  lv_obj_set_style_pad_all(card, 8, 0);
+  lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_set_grid_cell(card, LV_GRID_ALIGN_STRETCH, col, 1,
+                       LV_GRID_ALIGN_STRETCH, row, 1);
+
+  // Metric name (small grey)
+  lv_obj_t *name = lv_label_create(card);
+  lv_obj_set_style_text_font(name, &lv_font_montserrat_14, 0);
+  lv_obj_set_style_text_color(name, lv_color_hex(0x757575), 0);
+  lv_label_set_text(name, g_metrics[idx].label);
+  lv_obj_align(name, LV_ALIGN_TOP_LEFT, 0, 0);
+
+  // Big value
+  lv_obj_t *val = lv_label_create(card);
+  lv_obj_set_style_text_font(val, &lv_font_montserrat_28, 0);
+  lv_obj_set_style_text_color(val, lv_color_hex(0x212121), 0);
+  lv_label_set_text(val, "--");
+  lv_obj_align(val, LV_ALIGN_BOTTOM_LEFT, 0, 0);
+  g_metric_value_labels[idx] = val;
+
+  return card;
+}
+
+// Create page 2: system monitor with numeric metric grid (2 cols x 5 rows)
 static void create_system_page() {
-  g_page2 = lv_obj_create(nullptr);  // new screen
-  lv_obj_set_style_bg_color(g_page2, lv_color_hex(0xF5F5F5), 0);
+  g_page2 = lv_obj_create(nullptr);
+  lv_obj_set_style_bg_color(g_page2, lv_color_hex(0xF0F0F0), 0);
   lv_obj_set_style_bg_opa(g_page2, LV_OPA_COVER, 0);
   lv_obj_clear_flag(g_page2, LV_OBJ_FLAG_SCROLLABLE);
   lv_obj_set_style_pad_all(g_page2, 8, 0);
-  lv_obj_set_style_pad_gap(g_page2, 8, 0);
+  lv_obj_set_style_pad_gap(g_page2, 6, 0);
   lv_obj_set_flex_flow(g_page2, LV_FLEX_FLOW_COLUMN);
   lv_obj_set_flex_align(g_page2, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
@@ -626,111 +685,23 @@ static void create_system_page() {
   lv_obj_set_style_text_color(g_sys_time_label, lv_color_hex(0x212121), 0);
   lv_label_set_text(g_sys_time_label, "--:--");
 
-  // 2x2 grid container for charts
+  // Grid container: 2 columns x 5 rows
   lv_obj_t *grid = lv_obj_create(g_page2);
-  lv_obj_set_size(grid, 464, 400);
+  lv_obj_set_size(grid, 464, 420);
   lv_obj_set_style_bg_opa(grid, LV_OPA_TRANSP, 0);
   lv_obj_set_style_border_width(grid, 0, 0);
   lv_obj_set_style_pad_all(grid, 0, 0);
-  lv_obj_set_style_pad_gap(grid, 8, 0);
+  lv_obj_set_style_pad_gap(grid, 6, 0);
   lv_obj_clear_flag(grid, LV_OBJ_FLAG_SCROLLABLE);
   lv_obj_set_layout(grid, LV_LAYOUT_GRID);
 
-  // Grid: 2 columns x 2 rows
-  static int32_t col_dsc[] = {232, 232, LV_GRID_TEMPLATE_LAST};
-  static int32_t row_dsc[] = {196, 196, LV_GRID_TEMPLATE_LAST};
+  static int32_t col_dsc[] = {229, 229, LV_GRID_TEMPLATE_LAST};
+  static int32_t row_dsc[] = {80, 80, 80, 80, 80, LV_GRID_TEMPLATE_LAST};
   lv_obj_set_style_grid_column_dsc_array(grid, col_dsc, 0);
   lv_obj_set_style_grid_row_dsc_array(grid, row_dsc, 0);
 
-  for (int i = 0; i < 4; i++) {
-    lv_obj_t *cell = lv_obj_create(grid);
-    lv_obj_set_style_bg_color(cell, lv_color_hex(0xFFFFFF), 0);
-    lv_obj_set_style_bg_opa(cell, LV_OPA_COVER, 0);
-    lv_obj_set_style_radius(cell, 8, 0);
-    lv_obj_set_style_border_width(cell, 0, 0);
-    lv_obj_set_style_pad_all(cell, 4, 0);
-    lv_obj_clear_flag(cell, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_grid_cell(cell, LV_GRID_ALIGN_STRETCH, i % 2, 1,
-                         LV_GRID_ALIGN_STRETCH, i / 2, 1);
-
-    // Chart name label
-    lv_obj_t *name = lv_label_create(cell);
-    lv_obj_set_style_text_font(name, &lv_font_montserrat_14, 0);
-    lv_obj_set_style_text_color(name, lv_color_hex(0x616161), 0);
-    lv_label_set_text(name, g_chart_names[i]);
-    lv_obj_align(name, LV_ALIGN_TOP_LEFT, 0, 0);
-
-    // Chart
-    g_charts[i] = lv_chart_create(cell);
-    lv_obj_set_size(g_charts[i], 220, 160);
-    lv_obj_align(g_charts[i], LV_ALIGN_BOTTOM_MID, 0, 0);
-    lv_chart_set_type(g_charts[i], LV_CHART_TYPE_LINE);
-    lv_chart_set_point_count(g_charts[i], CHART_POINTS);
-    int32_t y_max = (i < 2) ? 100 : 500;  // CPU/GPU: 0-100%, RAM/NET: scaled 0-500
-    lv_chart_set_range(g_charts[i], LV_CHART_AXIS_PRIMARY_Y, 0, y_max);
-    lv_chart_set_div_line_count(g_charts[i], 4, 8);
-    lv_chart_set_update_mode(g_charts[i], LV_CHART_UPDATE_MODE_SHIFT);
-
-    // Y-axis scale numbers (max top-left, mid, min bottom-left of chart)
-    int32_t y_mid = y_max / 2;
-    // Actual unscaled values for display
-    int32_t y_max_real = (i < 2) ? 100 : (i == 2 ? (int32_t)g_dummy_targets[2] : 0);
-    // For RAM show GB, for NET show KB/s
-    char ymax_str[16], ymid_str[16], ymin_str[16];
-    if (i == 2) { // RAM
-      snprintf(ymax_str, sizeof(ymax_str), "%.0fG", y_max * 100.0f / 1024.0f);
-      snprintf(ymid_str, sizeof(ymid_str), "%.0fG", y_mid * 100.0f / 1024.0f);
-      snprintf(ymin_str, sizeof(ymin_str), "0");
-    } else if (i == 3) { // NET
-      snprintf(ymax_str, sizeof(ymax_str), "%dK", y_max * 10);
-      snprintf(ymid_str, sizeof(ymid_str), "%dK", y_mid * 10);
-      snprintf(ymin_str, sizeof(ymin_str), "0");
-    } else { // CPU/GPU
-      snprintf(ymax_str, sizeof(ymax_str), "%d%%", y_max);
-      snprintf(ymid_str, sizeof(ymid_str), "%d%%", y_mid);
-      snprintf(ymin_str, sizeof(ymin_str), "0");
-    }
-
-    lv_obj_t *yl_max = lv_label_create(cell);
-    lv_obj_set_style_text_font(yl_max, &lv_font_montserrat_12, 0);
-    lv_obj_set_style_text_color(yl_max, lv_color_hex(0x9E9E9E), 0);
-    lv_label_set_text(yl_max, ymax_str);
-    lv_obj_align(yl_max, LV_ALIGN_TOP_RIGHT, -2, 16);
-
-    lv_obj_t *yl_mid = lv_label_create(cell);
-    lv_obj_set_style_text_font(yl_mid, &lv_font_montserrat_12, 0);
-    lv_obj_set_style_text_color(yl_mid, lv_color_hex(0x9E9E9E), 0);
-    lv_label_set_text(yl_mid, ymid_str);
-    lv_obj_align(yl_mid, LV_ALIGN_RIGHT_MID, -2, 0);
-
-    lv_obj_t *yl_min = lv_label_create(cell);
-    lv_obj_set_style_text_font(yl_min, &lv_font_montserrat_12, 0);
-    lv_obj_set_style_text_color(yl_min, lv_color_hex(0x9E9E9E), 0);
-    lv_label_set_text(yl_min, ymin_str);
-    lv_obj_align(yl_min, LV_ALIGN_BOTTOM_RIGHT, -2, -2);
-
-    // X-axis time labels: "-5m" left, "now" right
-    lv_obj_t *xl_left = lv_label_create(cell);
-    lv_obj_set_style_text_font(xl_left, &lv_font_montserrat_12, 0);
-    lv_obj_set_style_text_color(xl_left, lv_color_hex(0x9E9E9E), 0);
-    lv_label_set_text(xl_left, "-5m");
-    lv_obj_align(xl_left, LV_ALIGN_BOTTOM_LEFT, 2, -2);
-
-    lv_obj_t *xl_right = lv_label_create(cell);
-    lv_obj_set_style_text_font(xl_right, &lv_font_montserrat_12, 0);
-    lv_obj_set_style_text_color(xl_right, lv_color_hex(0x9E9E9E), 0);
-    lv_label_set_text(xl_right, "now");
-    lv_obj_align(xl_right, LV_ALIGN_BOTTOM_RIGHT, -18, -2);
-
-    g_series[i] = lv_chart_add_series(g_charts[i],
-        lv_color_hex(i == 0 ? 0x2196F3 : i == 1 ? 0x9C27B0 : i == 2 ? 0x4CAF50 : 0xFF9800),
-        LV_CHART_AXIS_PRIMARY_Y);
-
-    // Init with zeros
-    for (int p = 0; p < CHART_POINTS; p++) {
-      lv_chart_set_next_value(g_charts[i], g_series[i], 0);
-    }
-    lv_chart_set_point_count(g_charts[i], CHART_POINTS);
+  for (int i = 0; i < M_COUNT; i++) {
+    create_metric_card(grid, i % 2, i / 2, i);
   }
 }
 

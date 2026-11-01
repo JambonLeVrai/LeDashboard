@@ -90,7 +90,6 @@ void SystemSource::sample_once() {
         if (table && GetIfTable(table, &size, FALSE) == NO_ERROR) {
             uint64_t in_octets = 0, out_octets = 0;
             for (DWORD i = 0; i < table->dwNumEntries; i++) {
-                // Skip loopback and down interfaces
                 if (table->table[i].dwType == IF_TYPE_SOFTWARE_LOOPBACK) continue;
                 if (table->table[i].dwOperStatus != IF_OPER_STATUS_OPERATIONAL) continue;
                 in_octets += table->table[i].dwInOctets;
@@ -103,8 +102,9 @@ void SystemSource::sample_once() {
                 if (elapsed_s > 0.1) {
                     double down_bps = (in_octets - prev_net_in_) / elapsed_s;
                     double up_bps = (out_octets - prev_net_out_) / elapsed_s;
-                    m.net_down_kbps = static_cast<uint32_t>(down_bps / 1024.0);
-                    m.net_up_kbps = static_cast<uint32_t>(up_bps / 1024.0);
+                    // Convert bytes/s → Mbps * 10
+                    m.net_down_mbps_x10 = static_cast<uint16_t>(down_bps * 8.0 / 1000000.0 * 10.0);
+                    m.net_up_mbps_x10 = static_cast<uint16_t>(up_bps * 8.0 / 1000000.0 * 10.0);
                 }
             }
             prev_net_in_ = in_octets;
@@ -115,10 +115,24 @@ void SystemSource::sample_once() {
         free(table);
     }
 
-    // ---- GPU: not available via simple API on all systems; set 0 for now ----
-    // (PDH counters would be needed; can be added later)
-    m.gpu_x10 = 0;
-#endif
+    // ---- Disk C: via GetDiskFreeSpaceEx ----
+    ULARGE_INTEGER free_avail, total_bytes, total_free;
+    if (GetDiskFreeSpaceExA("C:\\", &free_avail, &total_bytes, &total_free)) {
+        uint64_t used_gb = (total_bytes.QuadPart - total_free.QuadPart) / (1024ULL * 1024 * 1024);
+        uint64_t total_gb = total_bytes.QuadPart / (1024ULL * 1024 * 1024);
+        m.disk_used_gb = static_cast<uint16_t>(used_gb > 65535 ? 65535 : used_gb);
+        m.disk_total_gb = static_cast<uint16_t>(total_gb > 65535 ? 65535 : total_gb);
+    }
+
+    // ---- Temperatures via WMI (MSAcpi_ThermalZoneTemperature in root\wmi) ----
+    // Best-effort: often unavailable without admin; set 0 if not found.
+    // CPU temp often available as first thermal zone; MB temp as another.
+    m.cpu_temp_x10 = 0;
+    m.gpu_temp_x10 = 0;
+    m.mb_temp_x10 = 0;
+    // (WMI query would go here; skipped for simplicity — can use OpenHardwareMonitor
+    //  WMI provider or PDH \Thermal Zone Information\Temperature)
+    // GPU: 0 for now (PDH \GPU Engine requires per-process; \Thermal Zone covers system)
 
     {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -127,8 +141,9 @@ void SystemSource::sample_once() {
         dirty_ = true;
     }
 
-    spdlog::debug("System: CPU={:.1f}% GPU={:.1f}% RAM={}/{}MB NET={}/{}KB/s",
-                  m.cpu_x10 / 10.0, m.gpu_x10 / 10.0,
-                  m.ram_used_mb, m.ram_total_mb,
-                  m.net_down_kbps, m.net_up_kbps);
+    spdlog::debug("System: CPU={:.1f}%/{:.0f}C GPU={:.1f}% RAM={}/{}MB Disk={}/{}GB NET={:.1f}/{:.1f}Mbps",
+                  m.cpu_x10 / 10.0, m.cpu_temp_x10 / 10.0, m.gpu_x10 / 10.0,
+                  m.ram_used_mb, m.ram_total_mb, m.disk_used_gb, m.disk_total_gb,
+                  m.net_down_mbps_x10 / 10.0, m.net_up_mbps_x10 / 10.0);
+#endif
 }
