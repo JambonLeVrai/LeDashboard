@@ -31,7 +31,8 @@ public:
 
 private:
     void sample_loop();
-    void sample_once();
+    void sample_once();   // fast sample (500ms) — updates ring buffers
+    void emit();          // compute averages over the window, update last_ (every 5s)
 
     // CPU: GetSystemTimes delta
     uint64_t prev_idle_ = 0, prev_kernel_ = 0, prev_user_ = 0;
@@ -42,6 +43,20 @@ private:
     std::chrono::steady_clock::time_point prev_net_time_;
     bool first_net_ = true;
 
+    // Ring buffers for averaging (10 samples at 500ms = 5s window)
+    static constexpr int RING_SIZE = 10;
+    float ring_cpu_[RING_SIZE] = {0};
+    float ring_gpu_[RING_SIZE] = {0};
+    float ring_disk_[RING_SIZE] = {0};
+    float ring_net_down_[RING_SIZE] = {0};
+    float ring_net_up_[RING_SIZE] = {0};
+    int ring_idx_ = 0;
+    int ring_count_ = 0;
+
+    // Latest temps (not averaged)
+    double latest_cpu_temp_c_ = 0;
+    double latest_gpu_temp_c_ = 0;
+
     mutable std::mutex mutex_;
     SystemMessageBinary last_{};
     bool has_data_ = false;
@@ -50,5 +65,6 @@ private:
     std::atomic<bool> running_{false};
     std::thread thread_;
 
-    static constexpr auto SAMPLE_INTERVAL = std::chrono::seconds(5);
+    static constexpr auto SAMPLE_INTERVAL = std::chrono::milliseconds(500); // fast poll
+    static constexpr auto EMIT_INTERVAL   = std::chrono::seconds(5);         // send to dashboard
 };
