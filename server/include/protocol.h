@@ -130,7 +130,27 @@ struct WeatherMessageBinary {
     int16_t  tomorrow_max_x10;   // 2 — tomorrow max temp * 10
     uint8_t  tomorrow_condition; // 1 — tomorrow condition icon
     uint16_t pressure_x10;       // 2 — hPa * 10
-};  // total: 26 bytes
+};  // total: 28 bytes
+
+// Media message — variable length: fixed header + title + artist strings
+// state: 0=stopped, 1=paused, 2=playing
+#pragma pack(push, 1)
+struct MediaMessageBinary {
+    uint64_t timestamp_ms;   // 8 — server UTC ms when sent (for timer sync on ESP32)
+    uint32_t position_ms;    // 4 — current playback position
+    uint32_t duration_ms;    // 4 — total track duration
+    uint8_t  state;          // 1 — 0=stopped, 1=paused, 2=playing
+    uint8_t  title_len;      // 1 — length of title string that follows
+    uint8_t  artist_len;     // 1 — length of artist string that follows
+    // char title[title_len];
+    // char artist[artist_len];
+};  // header: 19 bytes + variable strings
+#pragma pack(pop)
+
+// Media playback states
+constexpr uint8_t MEDIA_STOPPED = 0;
+constexpr uint8_t MEDIA_PAUSED  = 1;
+constexpr uint8_t MEDIA_PLAYING = 2;
 
 struct AckMessage {
     uint8_t acked_type;

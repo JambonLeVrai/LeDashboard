@@ -25,6 +25,7 @@ SerialHandler::SerialHandler()
       last_hb_received_(0),
       time_handler_(nullptr),
       weather_handler_(nullptr),
+      media_handler_(nullptr),
       conn_handler_(nullptr) {}
 
 void SerialHandler::begin(unsigned long baud_rate) {
@@ -107,6 +108,18 @@ void SerialHandler::handle_frame(uint8_t type, const uint8_t *payload, unsigned 
                 weather_handler_(&w);
             }
             send_ack(MSG_WEATHER);
+            break;
+        }
+
+        case MSG_MEDIA: {
+            if (len >= sizeof(MediaMessageBinary) && media_handler_) {
+                MediaMessageBinary hdr;
+                memcpy(&hdr, payload, sizeof(hdr));
+                const char *title  = reinterpret_cast<const char *>(payload + sizeof(hdr));
+                const char *artist = title + hdr.title_len;
+                media_handler_(&hdr, title, artist);
+            }
+            send_ack(MSG_MEDIA);
             break;
         }
 

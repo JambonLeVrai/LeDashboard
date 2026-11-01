@@ -273,6 +273,19 @@ class Esp32Emulator:
             return (f"temp={temp:.1f}C feels={feels:.1f}C RH={rh}% cond={cond} UV={uv} "
                     f"AQI={aqi} wind={wind_spd:.1f}m/s@{wind_dir} "
                     f"tmr={tmr_min:.1f}/{tmr_max:.1f}C cond={tmr_cond} P={pressure:.1f}hPa")
+        if msg_type == MEDIA and len(payload) >= 19:
+            ts_ms = int.from_bytes(payload[0:8], "little")
+            pos_ms = int.from_bytes(payload[8:12], "little")
+            dur_ms = int.from_bytes(payload[12:16], "little")
+            state = payload[16]
+            tlen = payload[17]
+            alen = payload[18]
+            title = payload[19:19+tlen].decode("utf-8", errors="replace")
+            artist = payload[19+tlen:19+tlen+alen].decode("utf-8", errors="replace")
+            state_name = {0: "STOPPED", 1: "PAUSED", 2: "PLAYING"}.get(state, "?")
+            pos_str = f"{pos_ms//60000}:{pos_ms//1000%60:02d}"
+            dur_str = f"{dur_ms//60000}:{dur_ms//1000%60:02d}" if dur_ms else "-:--"
+            return f"state={state_name} {pos_str}/{dur_str} \"{title}\" — \"{artist}\""
         if msg_type == HEARTBEAT and len(payload) >= 3:
             return f"seq={payload[0]} proto={payload[1]}.{payload[2]}"
         if msg_type == ACK and len(payload) >= 1:

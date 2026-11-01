@@ -52,7 +52,15 @@ find_package(doctest CONFIG REQUIRED)
 if(WIN32)
     target_compile_definitions(ledashboard_server PRIVATE PLATFORM_WINDOWS=1)
     # Windows-specific libraries
-    target_link_libraries(ledashboard_server PRIVATE Setupapi)
+    target_link_libraries(ledashboard_server PRIVATE Setupapi windowsapp)
+
+    # C++/WinRT headers for SMTC (media info) — from Windows SDK cppwinrt dir
+    file(GLOB SDK_CPPWINRT_DIRS "${CMAKE_VS_WINDOWS_SDK_DIR}/Include/*/cppwinrt")
+    if(SDK_CPPWINRT_DIRS)
+        list(GET SDK_CPPWINRT_DIRS 0 SDK_CPPWINRT_DIR)
+        target_include_directories(ledashboard_server PRIVATE "${SDK_CPPWINRT_DIR}")
+        message(STATUS "C++/WinRT include: ${SDK_CPPWINRT_DIR}")
+    endif()
 elseif(UNIX AND NOT APPLE)
     target_compile_definitions(ledashboard_server PRIVATE PLATFORM_LINUX=1)
 elseif(APPLE)

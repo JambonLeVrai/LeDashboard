@@ -34,9 +34,10 @@ bool DashboardServer::initialize(const std::string &port_name, uint32_t baud_rat
     }
 
     auto now = std::chrono::steady_clock::now();
-    last_hb_sent_       = now - HB_INTERVAL;   // send HEARTBEAT immediately on first loop
+    last_hb_sent_       = now - HB_INTERVAL;
     last_hb_received_   = now;
-    last_time_sent_     = now - TIME_INTERVAL; // send TIME immediately on first loop
+    last_time_sent_     = now - TIME_INTERVAL;
+    last_media_sent_    = now - MEDIA_INTERVAL; // send media immediately on first loop
 
     spdlog::info("DashboardServer initialized on {} @ {} (weather: {})", port_name, baud_rate, weather_location);
     return true;
@@ -59,6 +60,13 @@ void DashboardServer::run() {
         if (now - last_time_sent_ >= TIME_INTERVAL) {
             send_time();
             last_time_sent_ = now;
+        }
+
+        // Poll media and send every 1s (timer ticks on ESP32)
+        if (now - last_media_sent_ >= MEDIA_INTERVAL) {
+            media_.update();
+            send_media();
+            last_media_sent_ = now;
         }
 
         // Update weather from API if needed (hourly), then send only if data changed
@@ -167,6 +175,19 @@ void DashboardServer::send_weather() {
                   w.tomorrow_condition);
 }
 
+void DashboardServer::send_media() {
+    auto payload = media_.build_payload();
+    send_frame(MsgType::MEDIA, payload);
+    const auto &m = media_.last();
+    if (m.valid) {
+        spdlog::debug("-> MEDIA state={} pos={}ms/{}ms \"{}\" — \"{}\"{}",
+                      m.state, m.position_ms, m.duration_ms,
+                      m.title, m.artist, m.is_spotify ? " [spotify]" : "");
+    } else {
+        spdlog::debug("-> MEDIA (no active session)");
+    }
+}
+
 void DashboardServer::send_ack(MsgType acked_type) {
     AckMessage ack{};
     ack.acked_type = static_cast<uint8_t>(acked_type);
@@ -220,9 +241,11 @@ void DashboardServer::on_frame(const DecodedFrame &frame) {
             last_hb_received_ = std::chrono::steady_clock::now();
             if (!connected_) {
                 connected_ = true;
-                weather_dirty_ = true;  // send weather on connect so ESP32 gets initial data
-                send_time();            // send TIME immediately so ESP32 syncs right away
-                spdlog::info("ESP32 connected (heartbeat received, time+weather sent)");
+                weather_dirty_ = true;  // send weather on connect
+                send_time();            // sync time immediately
+                media_.update();
+                send_media();           // send media state immediately
+                spdlog::info("ESP32 connected (heartbeat received, time+weather+media sent)");
             }
             uint8_t seq = frame.payload.size() > 0 ? frame.payload[0] : 0;
             spdlog::debug("   HEARTBEAT seq={}", seq);

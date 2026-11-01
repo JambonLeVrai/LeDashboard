@@ -103,6 +103,7 @@ void update_date_display();
 void format_date_single_line(char* buffer, size_t size);
 void on_server_time(const TimeMessageBinary *t);
 void on_server_weather(const WeatherMessageBinary *w);
+void on_server_media(const MediaMessageBinary *hdr, const char *title, const char *artist);
 void on_conn_state(connection_state_t s);
 
 // Display flushing callback for LVGL
@@ -507,16 +508,41 @@ void create_time_weather_page() {
 // Globals for title scroll animation
 lv_obj_t *g_title_label = nullptr;
 int32_t g_title_scroll_dist = 0;
-#define TITLE_SCROLL_SPEED_PX_S  60   // Fixed scroll speed: 60 pixels per second
-#define TITLE_PAUSE_MS           2000 // 2 second pause at start and end
+#define TITLE_SCROLL_SPEED_PX_S  60
+#define TITLE_PAUSE_MS           2000
 
-// Globals for media player state
+// Globals for media player state (server-driven)
 lv_obj_t *g_timer_label = nullptr;
 lv_obj_t *g_play_icon = nullptr;
-int g_media_position_sec = 0;      // Current position in seconds
-const int MEDIA_DURATION_SEC = 120; // 2:00 song
-bool g_media_playing = true;
-uint32_t g_media_last_update = 0;
+
+// Media sync anchor: server sends position_ms + timestamp_ms; we compute
+// current_pos = position_ms + (server_now_ms - timestamp_ms)
+static uint64_t media_anchor_server_ms = 0;  // server UTC ms at reception
+static uint32_t media_anchor_local_ms  = 0;  // our millis() at reception
+static uint32_t media_position_ms      = 0;
+static uint32_t media_duration_ms      = 0;
+static uint8_t  media_state            = MEDIA_STOPPED;
+static char     media_title[256]       = "";
+static char     media_artist[256]      = "";
+static bool     media_has_data         = false;
+
+// Server-local ms clock (same anchor as time sync)
+static uint64_t server_local_ms() {
+  if (!time_synced_from_server) return 0;
+  return server_ts_ms + (uint64_t)(millis() - local_rx_millis)
+         + (uint64_t)server_tz_min * 60ULL * 1000ULL;
+}
+
+// Compute current playback position in ms using the media anchor
+static uint32_t current_position_ms() {
+  if (media_state != MEDIA_PLAYING || !media_has_data) return media_position_ms;
+  uint64_t srv_now = server_local_ms();
+  if (srv_now == 0) return media_position_ms;
+  uint64_t elapsed = srv_now - media_anchor_server_ms;
+  uint64_t pos = (uint64_t)media_position_ms + elapsed;
+  if (media_duration_ms > 0 && pos > media_duration_ms) pos = media_duration_ms;
+  return (uint32_t)pos;
+}
 
 // Start the scroll animation at fixed speed, then handle end-pause and loop
 void start_title_scroll() {
@@ -562,29 +588,71 @@ void start_title_scroll_initial() {
   }, TITLE_PAUSE_MS, nullptr);
 }
 
-// Update media progress (called every loop iteration)
-void update_media() {
-  if (!g_media_playing) return;
-  
-  uint32_t now = millis();
-  if (now - g_media_last_update >= 1000) {
-    g_media_last_update = now;
-    g_media_position_sec++;
-    if (g_media_position_sec >= MEDIA_DURATION_SEC) {
-      g_media_position_sec = 0; // Loop the song
-    }
-    
-    // Update timer text: "M:SS/M:SS" format
-    if (g_timer_label != nullptr) {
-      char timer_str[20];
-      int pos_m = g_media_position_sec / 60;
-      int pos_s = g_media_position_sec % 60;
-      int tot_m = MEDIA_DURATION_SEC / 60;
-      int tot_s = MEDIA_DURATION_SEC % 60;
-      snprintf(timer_str, sizeof(timer_str), "%d:%02d/%d:%02d", pos_m, pos_s, tot_m, tot_s);
-      lv_label_set_text(g_timer_label, timer_str);
-    }
+// Called by SerialHandler when a MEDIA message arrives from the server
+void on_server_media(const MediaMessageBinary *hdr, const char *title, const char *artist) {
+  // Anchor the timer: server UTC ms + our local millis at reception
+  media_anchor_server_ms = hdr->timestamp_ms + (uint64_t)server_tz_min * 60ULL * 1000ULL;
+  media_anchor_local_ms  = millis();
+  media_position_ms      = hdr->position_ms;
+  media_duration_ms      = hdr->duration_ms;
+  media_state            = hdr->state;
+  media_has_data         = true;
+
+  // Copy title/artist (null-terminated for LVGL)
+  size_t tl = hdr->title_len < 255 ? hdr->title_len : 255;
+  size_t al = hdr->artist_len < 255 ? hdr->artist_len : 255;
+  memcpy(media_title, title, tl);  media_title[tl] = '\0';
+  memcpy(media_artist, artist, al); media_artist[al] = '\0';
+
+  // Build display string: "Title — Artist" or "—" if stopped
+  char display[512];
+  if (media_state == MEDIA_STOPPED || (tl == 0 && al == 0)) {
+    snprintf(display, sizeof(display), "\xE2\x80\x94"); // em dash
+  } else if (al > 0) {
+    snprintf(display, sizeof(display), "%s \xE2\x80\x94 %s", media_title, media_artist);
+  } else {
+    snprintf(display, sizeof(display), "%s", media_title);
   }
+
+  // Update title label and restart scroll animation
+  if (g_title_label) {
+    lv_label_set_text(g_title_label, display);
+    lv_obj_update_layout(g_title_label);
+    int32_t text_width = lv_obj_get_content_width(g_title_label);
+    g_title_scroll_dist = text_width - 320;
+    if (g_title_scroll_dist < 0) g_title_scroll_dist = 0;
+    lv_obj_set_x(g_title_label, 0);
+    start_title_scroll_initial();
+  }
+
+  // Update play/pause icon
+  if (g_play_icon) {
+    lv_image_set_src(g_play_icon, media_state == MEDIA_PLAYING ? &play_16 : &pause_16);
+  }
+
+  // Timer will be updated in update_media()
+  Serial.printf("[MAIN] MEDIA: state=%d pos=%ums/%ums \"%s\"\n",
+                media_state, media_position_ms, media_duration_ms, display);
+}
+
+// Update media timer display (called every loop)
+void update_media() {
+  if (!g_timer_label || !media_has_data) return;
+
+  uint32_t pos = current_position_ms();
+  uint32_t dur = media_duration_ms;
+
+  char timer_str[20];
+  if (media_state == MEDIA_STOPPED || dur == 0) {
+    snprintf(timer_str, sizeof(timer_str), "-:--/-:--");
+  } else {
+    int pos_m = (pos / 1000) / 60;
+    int pos_s = (pos / 1000) % 60;
+    int tot_m = (dur / 1000) / 60;
+    int tot_s = (dur / 1000) % 60;
+    snprintf(timer_str, sizeof(timer_str), "%d:%02d/%d:%02d", pos_m, pos_s, tot_m, tot_s);
+  }
+  lv_label_set_text(g_timer_label, timer_str);
 }
 
 // Create the media player bar at the bottom of the screen
@@ -619,7 +687,7 @@ void create_media_player() {
   lv_obj_set_style_text_color(title_label, lv_color_hex(0x000000), 0); // Black
   lv_obj_set_style_text_align(title_label, LV_TEXT_ALIGN_LEFT, 0);
   lv_label_set_long_mode(title_label, LV_LABEL_LONG_CLIP);
-  lv_label_set_text(title_label, "A Very Long Song Title That Definitely Does Not Fit In The Allocated Space — Famous Artist Name feat. Another Artist");
+  lv_label_set_text(title_label, "\xE2\x80\x94"); // em dash placeholder until server sends media
   lv_obj_set_pos(title_label, 0, 0);
   lv_obj_set_width(title_label, LV_SIZE_CONTENT);
   lv_obj_set_height(title_label, 22);
@@ -639,7 +707,7 @@ void create_media_player() {
   lv_obj_set_style_text_font(timer_label, &lv_font_montserrat_16, 0);
   lv_obj_set_style_text_color(timer_label, lv_color_hex(0x000000), 0); // Black
   lv_obj_set_style_text_align(timer_label, LV_TEXT_ALIGN_RIGHT, 0);
-  lv_label_set_text(timer_label, "0:02:34/0:04:56");
+  lv_label_set_text(timer_label, "-:--/-:--");
   lv_obj_set_pos(timer_label, 320, 4);
   lv_obj_set_width(timer_label, 130);
   lv_obj_set_height(timer_label, 22);
@@ -651,7 +719,7 @@ void create_media_player() {
   g_play_icon = play_icon;
   
   g_timer_label = timer_label;
-  g_media_last_update = millis();
+  // g_media_last_update removed — timer is server-anchored now
 }
 
 // Initialize dummy weather data.
@@ -695,6 +763,7 @@ void setup()
   // Note: on ESP32 UART0 is shared with USB serial — the server connects via USB
   g_serial.on_time(on_server_time);
   g_serial.on_weather(on_server_weather);
+  g_serial.on_media(on_server_media);
   g_serial.on_conn_state(on_conn_state);
   g_serial.begin(115200);
 

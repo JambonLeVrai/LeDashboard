@@ -142,7 +142,24 @@ typedef struct {
     int16_t  tomorrow_max_x10;   // 2 — tomorrow max temp * 10
     uint8_t  tomorrow_condition; // 1 — tomorrow condition icon
     uint16_t pressure_x10;       // 2 — hPa * 10
-} WeatherMessageBinary;          // total: 26 bytes
+} WeatherMessageBinary;          // total: 28 bytes
+
+// Media message — variable length: header + title + artist strings
+#pragma pack(push, 1)
+typedef struct {
+    uint64_t timestamp_ms;   // 8 — server UTC ms when sent (timer sync)
+    uint32_t position_ms;    // 4 — current playback position
+    uint32_t duration_ms;    // 4 — total track duration
+    uint8_t  state;          // 1 — 0=stopped, 1=paused, 2=playing
+    uint8_t  title_len;      // 1
+    uint8_t  artist_len;     // 1
+    // char title[title_len]; char artist[artist_len];
+} MediaMessageBinary;        // header: 19 bytes
+#pragma pack(pop)
+
+#define MEDIA_STOPPED 0
+#define MEDIA_PAUSED  1
+#define MEDIA_PLAYING 2
 #pragma pack(pop)
 
 // (Old complex weather structs removed — replaced by compact WeatherMessageBinary above)

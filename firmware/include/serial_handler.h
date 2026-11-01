@@ -25,6 +25,10 @@ typedef void (*time_handler_t)(const TimeMessageBinary *time_msg);
 // Called when a WEATHER message is received and parsed.
 typedef void (*weather_handler_t)(const WeatherMessageBinary *weather_msg);
 
+// Called when a MEDIA message is received. The payload after the fixed header
+// is: char title[title_len] + char artist[artist_len].
+typedef void (*media_handler_t)(const MediaMessageBinary *hdr, const char *title, const char *artist);
+
 // Called when the connection state changes.
 typedef void (*conn_state_handler_t)(connection_state_t new_state);
 
@@ -59,6 +63,7 @@ public:
     // Register handlers
     void on_time(time_handler_t cb)       { time_handler_ = cb; }
     void on_weather(weather_handler_t cb) { weather_handler_ = cb; }
+    void on_media(media_handler_t cb)     { media_handler_ = cb; }
     void on_conn_state(conn_state_handler_t cb) { conn_handler_ = cb; }
 
     // Current connection state
@@ -76,6 +81,7 @@ private:
     uint32_t last_hb_received_;  // millis() of last heartbeat received
     time_handler_t time_handler_;
     weather_handler_t weather_handler_;
+    media_handler_t media_handler_;
     conn_state_handler_t conn_handler_;
 
     static constexpr uint32_t HB_INTERVAL_MS   = 5000;  // send heartbeat every 5s
