@@ -256,6 +256,23 @@ class Esp32Emulator:
             utc_dt = datetime.datetime.fromtimestamp(ts_ms / 1000.0, tz=datetime.timezone.utc)
             return (f"{h:02d}:{m:02d}:{s:02d} {day_name} {d} {month_name} {yr} "
                     f"(ts_ms={ts_ms} utc={utc_dt.strftime('%H:%M:%S')} tz={tz_min:+d} dst={dst})")
+        if msg_type == WEATHER and len(payload) >= 28:
+            ts_ms = int.from_bytes(payload[0:8], "little")
+            temp = int.from_bytes(payload[8:10], "little", signed=True) / 10.0
+            feels = int.from_bytes(payload[10:12], "little", signed=True) / 10.0
+            rh = payload[12]
+            cond = payload[13]
+            uv = payload[14]
+            aqi = int.from_bytes(payload[15:17], "little")
+            wind_spd = int.from_bytes(payload[17:19], "little") / 10.0
+            wind_dir = int.from_bytes(payload[19:21], "little")
+            tmr_min = int.from_bytes(payload[21:23], "little", signed=True) / 10.0
+            tmr_max = int.from_bytes(payload[23:25], "little", signed=True) / 10.0
+            tmr_cond = payload[25]
+            pressure = int.from_bytes(payload[26:28], "little") / 10.0
+            return (f"temp={temp:.1f}C feels={feels:.1f}C RH={rh}% cond={cond} UV={uv} "
+                    f"AQI={aqi} wind={wind_spd:.1f}m/s@{wind_dir} "
+                    f"tmr={tmr_min:.1f}/{tmr_max:.1f}C cond={tmr_cond} P={pressure:.1f}hPa")
         if msg_type == HEARTBEAT and len(payload) >= 3:
             return f"seq={payload[0]} proto={payload[1]}.{payload[2]}"
         if msg_type == ACK and len(payload) >= 1:

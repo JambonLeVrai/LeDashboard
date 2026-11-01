@@ -115,6 +115,23 @@ struct HeartbeatMessage {
     uint8_t protocol_minor;
 };
 
+// Compact weather message — exactly what the dashboard displays (26 bytes)
+struct WeatherMessageBinary {
+    uint64_t timestamp_ms;       // 8 — UTC ms when data was fetched
+    int16_t  temp_x10;           // 2 — current temp * 10 (225 = 22.5°C)
+    int16_t  feels_like_x10;     // 2 — feels-like temp * 10
+    uint8_t  humidity;           // 1 — 0-100%
+    uint8_t  condition_id;       // 1 — mapped to icon (COND_* codes)
+    uint8_t  uv_index;           // 1 — 0-11+
+    uint16_t air_quality;        // 2 — European AQI (0-500)
+    uint16_t wind_speed_x10;     // 2 — m/s * 10
+    uint16_t wind_direction;     // 2 — degrees 0-359
+    int16_t  tomorrow_min_x10;   // 2 — tomorrow min temp * 10
+    int16_t  tomorrow_max_x10;   // 2 — tomorrow max temp * 10
+    uint8_t  tomorrow_condition; // 1 — tomorrow condition icon
+    uint16_t pressure_x10;       // 2 — hPa * 10
+};  // total: 26 bytes
+
 struct AckMessage {
     uint8_t acked_type;
     uint8_t sequence;

@@ -15,7 +15,8 @@ DashboardServer::~DashboardServer() {
     serial_.close();
 }
 
-bool DashboardServer::initialize(const std::string &port_name, uint32_t baud_rate) {
+bool DashboardServer::initialize(const std::string &port_name, uint32_t baud_rate,
+                                 const std::string &weather_location) {
     if (!serial_.open(port_name, baud_rate)) {
         spdlog::error("Failed to open serial port {}", port_name);
         return false;
@@ -25,12 +26,20 @@ bool DashboardServer::initialize(const std::string &port_name, uint32_t baud_rat
         on_serial_data(data, len);
     });
 
-    auto now = std::chrono::steady_clock::now();
-    last_hb_sent_     = now;
-    last_hb_received_ = now;
-    last_time_sent_   = now;
+    // Initialize weather source (non-fatal if it fails — we just won't send weather)
+    if (!weather_.initialize(weather_location)) {
+        spdlog::warn("Weather source init failed: {} — continuing without weather", weather_.last_error());
+    } else {
+        weather_.set_update_interval(std::chrono::seconds(600)); // refetch every 10 min
+    }
 
-    spdlog::info("DashboardServer initialized on {} @ {}", port_name, baud_rate);
+    auto now = std::chrono::steady_clock::now();
+    last_hb_sent_       = now;
+    last_hb_received_   = now;
+    last_time_sent_     = now;
+    last_weather_sent_  = now - WEATHER_INTERVAL; // send weather immediately on first loop
+
+    spdlog::info("DashboardServer initialized on {} @ {} (weather: {})", port_name, baud_rate, weather_location);
     return true;
 }
 
@@ -51,6 +60,15 @@ void DashboardServer::run() {
         if (now - last_time_sent_ >= TIME_INTERVAL) {
             send_time();
             last_time_sent_ = now;
+        }
+
+        // Update weather from API if needed, then send to ESP32
+        if (weather_.needs_update()) {
+            weather_.update();
+        }
+        if (weather_.has_data() && now - last_weather_sent_ >= WEATHER_INTERVAL) {
+            send_weather();
+            last_weather_sent_ = now;
         }
 
         // Check connection timeout
@@ -135,6 +153,17 @@ void DashboardServer::send_time() {
     spdlog::debug("-> TIME {:02d}:{:02d}:{:02d} {:02d}/{:02d}/{:04d} dow={} ts_ms={}",
                   t.hour, t.minute, t.second, t.day, t.month, t.year, t.day_of_week,
                   t.timestamp_ms);
+}
+
+void DashboardServer::send_weather() {
+    const auto &w = weather_.last_message();
+    send_frame(MsgType::WEATHER, reinterpret_cast<const uint8_t *>(&w), sizeof(w));
+    spdlog::debug("-> WEATHER temp={:.1f}C feels={:.1f}C RH={}% cond={} UV={} AQI={} "
+                  "tmr={:.1f}/{:.1f}C cond={}",
+                  w.temp_x10 / 10.0, w.feels_like_x10 / 10.0, w.humidity,
+                  w.condition_id, w.uv_index, w.air_quality,
+                  w.tomorrow_min_x10 / 10.0, w.tomorrow_max_x10 / 10.0,
+                  w.tomorrow_condition);
 }
 
 void DashboardServer::send_ack(MsgType acked_type) {

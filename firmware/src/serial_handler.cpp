@@ -24,6 +24,7 @@ SerialHandler::SerialHandler()
       last_hb_sent_(0),
       last_hb_received_(0),
       time_handler_(nullptr),
+      weather_handler_(nullptr),
       conn_handler_(nullptr) {}
 
 void SerialHandler::begin(unsigned long baud_rate) {
@@ -92,6 +93,16 @@ void SerialHandler::handle_frame(uint8_t type, const uint8_t *payload, unsigned 
                               t.hour, t.minute, t.second, t.day, t.month, t.year, t.day_of_week);
             }
             send_ack(MSG_TIME);
+            break;
+        }
+
+        case MSG_WEATHER: {
+            if (len >= sizeof(WeatherMessageBinary) && weather_handler_) {
+                WeatherMessageBinary w;
+                memcpy(&w, payload, sizeof(w));
+                weather_handler_(&w);
+            }
+            send_ack(MSG_WEATHER);
             break;
         }
 

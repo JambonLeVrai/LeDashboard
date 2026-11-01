@@ -86,10 +86,22 @@ static uint32_t local_rx_millis = 0;     // millis() when last TIME was received
 lv_obj_t *time_label = NULL;
 lv_obj_t *date_label = NULL;
 
+// Weather UI elements (set in create_time_weather_page)
+lv_obj_t *weather_icon = NULL;
+lv_obj_t *temp_label = NULL;
+lv_obj_t *rh_label = NULL;
+lv_obj_t *aq_label = NULL;
+lv_obj_t *uv_label = NULL;
+lv_obj_t *tomorrow_icon = NULL;
+lv_obj_t *tomorrow_temp = NULL;
+
 // Forward declarations
 void update_time_display();
 void update_date_display();
 void format_date_single_line(char* buffer, size_t size);
+void on_server_time(const TimeMessageBinary *t);
+void on_server_weather(const WeatherMessageBinary *w);
+void on_conn_state(connection_state_t s);
 
 // Display flushing callback for LVGL
 void my_disp_flush(lv_display_t *disp, const lv_area_t *area, uint8_t *px_map)
@@ -217,6 +229,70 @@ void on_conn_state(connection_state_t s) {
   Serial.printf("[MAIN] Server connection: %s\n", names[(int)s]);
 }
 
+// Map condition_id to the 96px weather icon
+static const lv_image_dsc_t *condition_to_icon(uint8_t cond) {
+  switch (cond) {
+    case 0: case 1: return &sun_96;            // clear
+    case 2:         return &partly_cloudy_96;  // partly cloudy
+    case 3:         return &cloudy_96;         // cloudy
+    case 4:         return &cloudy_96;         // overcast → cloudy icon
+    case 5:         return &drizzle_96;        // drizzle / light rain
+    case 6: case 7: return &rain_96;           // rain
+    case 8:         return &thunder_96;        // thunderstorm
+    case 9:         return &snow_96;           // snow
+    case 10: case 11: return &fog_96;          // fog / mist
+    case 12:        return &wind_96;           // windy
+    default:        return &partly_cloudy_96;
+  }
+}
+
+// Called by SerialHandler when a WEATHER message arrives from the server
+void on_server_weather(const WeatherMessageBinary *w) {
+  // Current conditions
+  if (weather_icon) lv_image_set_src(weather_icon, condition_to_icon(w->condition_id));
+  if (temp_label) {
+    char buf[12];
+    snprintf(buf, sizeof(buf), "%.1f°C", w->temp_x10 / 10.0f);
+    lv_label_set_text(temp_label, buf);
+  }
+  if (rh_label) {
+    char buf[8];
+    snprintf(buf, sizeof(buf), "%d%%", w->humidity);
+    lv_label_set_text(rh_label, buf);
+  }
+  if (aq_label) {
+    char buf[8];
+    snprintf(buf, sizeof(buf), "%d", w->air_quality);
+    lv_label_set_text(aq_label, buf);
+  }
+  if (uv_label) {
+    char buf[4];
+    snprintf(buf, sizeof(buf), "%d", w->uv_index);
+    lv_label_set_text(uv_label, buf);
+  }
+
+  // Tomorrow forecast
+  if (tomorrow_icon) lv_image_set_src(tomorrow_icon, condition_to_icon(w->tomorrow_condition));
+  if (tomorrow_temp) {
+    char buf[16];
+    snprintf(buf, sizeof(buf), "%.0f/%.0f°C",
+             w->tomorrow_max_x10 / 10.0f, w->tomorrow_min_x10 / 10.0f);
+    lv_label_set_text(tomorrow_temp, buf);
+  }
+
+  // Update the dummy weather struct too (for any code still reading it)
+  current_weather.current_temp   = w->temp_x10 / 10.0f;
+  current_weather.tomorrow_min   = w->tomorrow_min_x10 / 10.0f;
+  current_weather.tomorrow_max   = w->tomorrow_max_x10 / 10.0f;
+  current_weather.humidity       = w->humidity;
+  current_weather.air_quality    = w->air_quality > 255 ? 255 : w->air_quality;
+  current_weather.uv_index       = w->uv_index;
+
+  Serial.printf("[MAIN] Weather: %.1fC RH=%d%% AQI=%d UV=%d tmr=%.0f/%.0fC\n",
+                w->temp_x10 / 10.0f, w->humidity, w->air_quality, w->uv_index,
+                w->tomorrow_max_x10 / 10.0f, w->tomorrow_min_x10 / 10.0f);
+}
+
 // Advance time display using millisecond-precise server sync.
 // Called every loop iteration; updates the label only when the second changes.
 void tick_local_time() {
@@ -331,18 +407,18 @@ void create_time_weather_page() {
   // Weather block starts below the time (96px font ~114px tall, starting at y=60)
   
   // Current weather icon - 96px, centered in left half
-  lv_obj_t *weather_icon = lv_image_create(page);
+  weather_icon = lv_image_create(page);
   lv_image_set_src(weather_icon, &partly_cloudy_96); // Dummy: partly cloudy
-  lv_obj_set_pos(weather_icon, 52, 190); // Centered: (240-96)/2 = 72, but left-aligned
-  
-  // Temperature text - centered relative to weather icon (icon at x=52, 96px wide, center=100)
-  lv_obj_t *temp_label = lv_label_create(page);
+  lv_obj_set_pos(weather_icon, 52, 190);
+
+  // Temperature text - centered relative to weather icon
+  temp_label = lv_label_create(page);
   lv_obj_set_style_text_font(temp_label, &lv_font_montserrat_28, 0);
   lv_obj_set_style_text_color(temp_label, lv_color_hex(0x212121), 0);
   lv_obj_set_style_text_align(temp_label, LV_TEXT_ALIGN_CENTER, 0);
-  lv_label_set_text(temp_label, "22°C");
-  lv_obj_set_pos(temp_label, 52, 298); // Same x as icon
-  lv_obj_set_width(temp_label, 96);    // Same width as icon for centering
+  lv_label_set_text(temp_label, "--°C");
+  lv_obj_set_pos(temp_label, 52, 298);
+  lv_obj_set_width(temp_label, 96);
   
   // Metrics row (compact): RH, Air Quality (score), UV - each with 32px icon above text
   // Text is center-aligned relative to each icon's horizontal center
@@ -352,52 +428,50 @@ void create_time_weather_page() {
   lv_image_set_src(rh_icon, &droplet_32);
   lv_obj_set_pos(rh_icon, 20, 345);
   
-  lv_obj_t *rh_label = lv_label_create(page);
+  rh_label = lv_label_create(page);
   lv_obj_set_style_text_font(rh_label, &lv_font_montserrat_16, 0);
   lv_obj_set_style_text_color(rh_label, lv_color_hex(0x616161), 0);
   lv_obj_set_style_text_align(rh_label, LV_TEXT_ALIGN_CENTER, 0);
-  lv_label_set_text(rh_label, "65%");
+  lv_label_set_text(rh_label, "--%");
   lv_obj_set_pos(rh_label, 12, 382);
   lv_obj_set_width(rh_label, 48);
   
-  // Air Quality - score 0-100, icon at x=90, center at 106, label x = 106 - 24 = 82
+  // Air Quality
   lv_obj_t *aq_icon = lv_image_create(page);
   lv_image_set_src(aq_icon, &air_quality_32);
   lv_obj_set_pos(aq_icon, 90, 345);
   
-  lv_obj_t *aq_label = lv_label_create(page);
+  aq_label = lv_label_create(page);
   lv_obj_set_style_text_font(aq_label, &lv_font_montserrat_16, 0);
   lv_obj_set_style_text_color(aq_label, lv_color_hex(0x616161), 0);
   lv_obj_set_style_text_align(aq_label, LV_TEXT_ALIGN_CENTER, 0);
-  lv_label_set_text(aq_label, "85");
+  lv_label_set_text(aq_label, "--");
   lv_obj_set_pos(aq_label, 82, 382);
   lv_obj_set_width(aq_label, 48);
   
-  // UV Index - icon at x=160, center at 176, label x = 176 - 24 = 152
+  // UV Index
   lv_obj_t *uv_icon = lv_image_create(page);
   lv_image_set_src(uv_icon, &uv_32);
   lv_obj_set_pos(uv_icon, 160, 345);
   
-  lv_obj_t *uv_label = lv_label_create(page);
+  uv_label = lv_label_create(page);
   lv_obj_set_style_text_font(uv_label, &lv_font_montserrat_16, 0);
   lv_obj_set_style_text_color(uv_label, lv_color_hex(0x616161), 0);
   lv_obj_set_style_text_align(uv_label, LV_TEXT_ALIGN_CENTER, 0);
-  lv_label_set_text(uv_label, "3");
+  lv_label_set_text(uv_label, "-");
   lv_obj_set_pos(uv_label, 152, 382);
   lv_obj_set_width(uv_label, 48);
   
   // ==================== RIGHT COLUMN (Tomorrow Forecast) ====================
   
-  // Tomorrow weather icon - 96px, right side
-  lv_obj_t *tomorrow_icon = lv_image_create(page);
+  tomorrow_icon = lv_image_create(page);
   lv_image_set_src(tomorrow_icon, &sun_96); // Dummy: sunny tomorrow
   lv_obj_set_pos(tomorrow_icon, 330, 190);
   
-  // Tomorrow temperature range
-  lv_obj_t *tomorrow_temp = lv_label_create(page);
+  tomorrow_temp = lv_label_create(page);
   lv_obj_set_style_text_font(tomorrow_temp, &lv_font_montserrat_28, 0);
   lv_obj_set_style_text_color(tomorrow_temp, lv_color_hex(0x212121), 0);
-  lv_label_set_text(tomorrow_temp, "15/8°C");
+  lv_label_set_text(tomorrow_temp, "--/--°C");
   lv_obj_set_pos(tomorrow_temp, 330, 300);
   
   // "Demain" label
@@ -594,6 +668,7 @@ void setup()
   // Initialize serial handler (uses UART0 / Serial, same port as debug)
   // Note: on ESP32 UART0 is shared with USB serial — the server connects via USB
   g_serial.on_time(on_server_time);
+  g_serial.on_weather(on_server_weather);
   g_serial.on_conn_state(on_conn_state);
   g_serial.begin(115200);
 

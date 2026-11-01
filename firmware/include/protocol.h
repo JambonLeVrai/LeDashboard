@@ -126,41 +126,26 @@ typedef struct {
     uint8_t protocol_major;
     uint8_t protocol_minor;
 } HeartbeatMessage;
+
+// Compact weather message — exactly what the dashboard displays (26 bytes)
+typedef struct {
+    uint64_t timestamp_ms;       // 8 — UTC ms when data was fetched
+    int16_t  temp_x10;           // 2 — current temp * 10
+    int16_t  feels_like_x10;     // 2 — feels-like temp * 10
+    uint8_t  humidity;           // 1 — 0-100%
+    uint8_t  condition_id;       // 1 — mapped to icon (COND_* codes)
+    uint8_t  uv_index;           // 1 — 0-11+
+    uint16_t air_quality;        // 2 — European AQI (0-500)
+    uint16_t wind_speed_x10;     // 2 — m/s * 10
+    uint16_t wind_direction;     // 2 — degrees 0-359
+    int16_t  tomorrow_min_x10;   // 2 — tomorrow min temp * 10
+    int16_t  tomorrow_max_x10;   // 2 — tomorrow max temp * 10
+    uint8_t  tomorrow_condition; // 1 — tomorrow condition icon
+    uint16_t pressure_x10;       // 2 — hPa * 10
+} WeatherMessageBinary;          // total: 26 bytes
 #pragma pack(pop)
 
-// Weather current message
-#pragma pack(push, 1)
-typedef struct {
-    int16_t temperature_x10;     // Temperature * 10 (e.g., 225 = 22.5°C)
-    int16_t feels_like_x10;
-    uint8_t humidity;            // 0-100%
-    uint16_t pressure_x10;       // Pressure * 10 (hPa)
-    uint16_t wind_speed_x10;     // Wind speed * 10 (m/s)
-    uint16_t wind_direction;     // 0-359 degrees
-    uint8_t condition_id;        // Condition code
-    uint32_t sunrise;
-    uint32_t sunset;
-} WeatherCurrentBinary;
-
-// Weather forecast for one day
-#pragma pack(push, 1)
-typedef struct {
-    uint32_t timestamp;
-    int16_t min_temp_x10;
-    int16_t max_temp_x10;
-    uint8_t condition_id;
-} WeatherForecastDayBinary;
-
-// Full weather message
-#pragma pack(push, 1)
-typedef struct {
-    uint32_t timestamp;
-    uint8_t location_id;
-    WeatherCurrentBinary current;
-    uint8_t forecast_count;
-    // WeatherForecastDayBinary forecast[5]; // Follows in payload
-} WeatherMessageBinary;
-#pragma pack(pop)
+// (Old complex weather structs removed — replaced by compact WeatherMessageBinary above)
 
 // =============================================================================
 // French Localization Constants

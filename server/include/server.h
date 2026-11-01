@@ -2,6 +2,7 @@
 
 #include "serial_port.h"
 #include "protocol.h"
+#include "weather_source.h"
 
 #include <string>
 #include <atomic>
@@ -13,6 +14,7 @@
 // =============================================================================
 //
 // Opens a serial port, sends HEARTBEAT every 5s and TIME every 1s,
+// fetches weather from Open-Meteo every 10min and sends WEATHER frames,
 // decodes incoming frames (ACK, NACK, HEARTBEAT, TOUCH, REQUEST, ...).
 
 class DashboardServer {
@@ -21,7 +23,9 @@ public:
     ~DashboardServer();
 
     // Initialize: open serial port with given settings.
-    bool initialize(const std::string &port_name, uint32_t baud_rate = 115200);
+    // weather_location: city name or "lat,lon" for Open-Meteo.
+    bool initialize(const std::string &port_name, uint32_t baud_rate = 115200,
+                    const std::string &weather_location = "Paris");
 
     // Main loop: runs until stop() is called (blocks).
     void run();
@@ -40,6 +44,7 @@ private:
     }
     void send_heartbeat();
     void send_time();
+    void send_weather();
     void send_ack(MsgType acked_type);
     void send_nack(MsgType nacked_type, uint8_t error_code);
 
@@ -53,6 +58,7 @@ private:
 
     SerialPort serial_;
     FrameDecoder decoder_;
+    WeatherSource weather_;
 
     std::atomic<bool> running_{false};
     std::atomic<bool> connected_{false};
@@ -61,10 +67,12 @@ private:
     std::chrono::steady_clock::time_point last_hb_sent_;
     std::chrono::steady_clock::time_point last_hb_received_;
     std::chrono::steady_clock::time_point last_time_sent_;
+    std::chrono::steady_clock::time_point last_weather_sent_;
 
-    static constexpr auto HB_INTERVAL   = std::chrono::seconds(5);
-    static constexpr auto TIME_INTERVAL = std::chrono::seconds(1);
-    static constexpr auto HB_TIMEOUT    = std::chrono::seconds(15);
+    static constexpr auto HB_INTERVAL      = std::chrono::seconds(5);
+    static constexpr auto TIME_INTERVAL    = std::chrono::seconds(1);
+    static constexpr auto WEATHER_INTERVAL = std::chrono::seconds(1); // send if data available; refetch every 10min internally
+    static constexpr auto HB_TIMEOUT       = std::chrono::seconds(15);
 
     std::mutex send_mutex_;
 };
