@@ -379,8 +379,18 @@ lv_obj_t* create_panel(lv_obj_t* parent, int x, int y, int w, int h) {
   lv_obj_set_style_radius(panel, 0, 0);
   lv_obj_set_style_border_width(panel, 0, 0);
   lv_obj_set_style_pad_all(panel, 0, 0);
-  lv_obj_remove_flag(panel, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_clear_flag(panel, LV_OBJ_FLAG_SCROLLABLE);
   return panel;
+}
+
+// Disable scrolling on an object and all its children recursively
+static void make_fixed(lv_obj_t *obj) {
+  lv_obj_clear_flag(obj, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_set_scrollbar_mode(obj, LV_SCROLLBAR_MODE_OFF);
+  uint32_t count = lv_obj_get_child_count(obj);
+  for (uint32_t i = 0; i < count; i++) {
+    make_fixed(lv_obj_get_child(obj, i));
+  }
 }
 
 // Create the Time+Weather page with fixed positions and larger fonts
@@ -591,7 +601,7 @@ void create_media_player() {
   lv_obj_set_style_border_width(media_bar, 0, 0);
   lv_obj_set_style_radius(media_bar, 0, 0); // Hard corners
   lv_obj_set_style_pad_all(media_bar, 0, 0);
-  lv_obj_remove_flag(media_bar, LV_OBJ_FLAG_SCROLLABLE); // Static, not scrollable
+  lv_obj_clear_flag(media_bar, LV_OBJ_FLAG_SCROLLABLE); // Static, not scrollable
   
   // Song title — Author: left-aligned, custom scroll animation
   // Timer + play icon on right; visible title area = 480 - 6 (left) - 130 (timer) - 24 (icon+gap) = 320
@@ -602,7 +612,7 @@ void create_media_player() {
   lv_obj_set_style_border_width(title_clip, 0, 0);
   lv_obj_set_style_radius(title_clip, 0, 0);
   lv_obj_set_style_pad_all(title_clip, 0, 0);
-  lv_obj_remove_flag(title_clip, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_clear_flag(title_clip, LV_OBJ_FLAG_SCROLLABLE);
   
   lv_obj_t *title_label = lv_label_create(title_clip);
   lv_obj_set_style_text_font(title_label, &g_title_font, 0); // Montserrat 18 + CJK fallback
@@ -758,7 +768,10 @@ void setup()
   // Build GUI - Time+Weather page with fixed positions
   create_time_weather_page();
   create_media_player();
-  
+
+  // Lock everything: disable scrolling on the screen and all children
+  make_fixed(lv_screen_active());
+
   Serial.println("Time+Weather page created. Ready!");
 }
 
