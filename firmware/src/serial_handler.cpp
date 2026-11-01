@@ -30,6 +30,7 @@ SerialHandler::SerialHandler()
 
 void SerialHandler::begin(unsigned long baud_rate) {
     Serial.begin(baud_rate);
+    Serial.setTimeout(1); // 1ms max for any blocking read (safety)
     // Flush any stale bytes that arrived during boot (before loop() started)
     while (Serial.available()) {
         Serial.read();
@@ -153,10 +154,17 @@ void SerialHandler::check_connection() {
 }
 
 void SerialHandler::process() {
-    // Read all available bytes and feed to decoder
+    // Non-blocking read: drain all available bytes without waiting
     while (Serial.available()) {
         uint8_t buf[256];
-        int n = Serial.readBytes(buf, sizeof(buf));
+        int avail = Serial.available();
+        int to_read = avail < (int)sizeof(buf) ? avail : (int)sizeof(buf);
+        int n = 0;
+        for (int i = 0; i < to_read; i++) {
+            int b = Serial.read();
+            if (b < 0) break;
+            buf[n++] = (uint8_t)b;
+        }
         if (n > 0) {
             decoder_feed(&decoder_, buf, (unsigned int)n);
         }
