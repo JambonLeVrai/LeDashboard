@@ -23,13 +23,14 @@ bool MediaSource::update() {
     try {
         auto mgr = GlobalSystemMediaTransportControlsSessionManager::RequestAsync().get();
         auto session = mgr.GetCurrentSession();
+
+        prev_ = last_;
+
         if (!session) {
+            last_ = MediaInfo{};
             last_.valid = false;
             last_.state = MEDIA_STOPPED;
-            last_.title.clear();
-            last_.artist.clear();
-            last_.position_ms = 0;
-            last_.duration_ms = 0;
+            changed_ = prev_.valid || prev_.state != MEDIA_STOPPED || !prev_.title.empty();
             return true;
         }
 
@@ -53,14 +54,22 @@ bool MediaSource::update() {
                 last_.state = MEDIA_STOPPED; break;
         }
 
-        // Timeline (position / duration) — on the session, not playback info
+        // Timeline — anchor position with local timestamp for live computation
         auto timeline = session.GetTimelineProperties();
-        auto pos = timeline.Position();   // 100ns ticks
-        auto end = timeline.EndTime();
-        last_.position_ms = static_cast<uint32_t>(pos.count() / 10000); // 100ns → ms
-        last_.duration_ms = static_cast<uint32_t>(end.count() / 10000);
+        last_.smtc_position_ms = static_cast<uint32_t>(timeline.Position().count() / 10000);
+        last_.duration_ms      = static_cast<uint32_t>(timeline.EndTime().count() / 10000);
+        last_.sampled_at_ms    = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                     std::chrono::system_clock::now().time_since_epoch()).count();
+        last_.position_ms = last_.smtc_position_ms;
 
         last_.valid = true;
+
+        // Detect changes: state, title, artist, or session appeared/disappeared
+        changed_ = (last_.state != prev_.state) ||
+                   (last_.title != prev_.title) ||
+                   (last_.artist != prev_.artist) ||
+                   (last_.valid != prev_.valid);
+
         return true;
 
     } catch (const winrt::hresult_error &e) {
@@ -71,12 +80,23 @@ bool MediaSource::update() {
     }
 }
 
+uint32_t MediaSource::live_position_ms() const {
+    if (!last_.valid || last_.state != MEDIA_PLAYING) return last_.position_ms;
+    int64_t now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                         std::chrono::system_clock::now().time_since_epoch()).count();
+    int64_t elapsed = now_ms - last_.sampled_at_ms;
+    int64_t pos = (int64_t)last_.smtc_position_ms + elapsed;
+    if (last_.duration_ms > 0 && pos > (int64_t)last_.duration_ms) pos = last_.duration_ms;
+    if (pos < 0) pos = 0;
+    return (uint32_t)pos;
+}
+
 std::vector<uint8_t> MediaSource::build_payload() const {
     MediaMessageBinary hdr{};
     hdr.timestamp_ms = static_cast<uint64_t>(
         std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::system_clock::now().time_since_epoch()).count());
-    hdr.position_ms = last_.position_ms;
+    hdr.position_ms = const_cast<MediaSource*>(this)->live_position_ms();
     hdr.duration_ms = last_.duration_ms;
     hdr.state = last_.state;
 

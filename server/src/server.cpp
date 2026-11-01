@@ -37,7 +37,8 @@ bool DashboardServer::initialize(const std::string &port_name, uint32_t baud_rat
     last_hb_sent_       = now - HB_INTERVAL;
     last_hb_received_   = now;
     last_time_sent_     = now - TIME_INTERVAL;
-    last_media_sent_    = now - MEDIA_INTERVAL; // send media immediately on first loop
+    last_media_sent_    = now - MEDIA_INTERVAL;
+    last_media_poll_    = now - MEDIA_POLL;
 
     spdlog::info("DashboardServer initialized on {} @ {} (weather: {})", port_name, baud_rate, weather_location);
     return true;
@@ -62,9 +63,20 @@ void DashboardServer::run() {
             last_time_sent_ = now;
         }
 
-        // Poll media and send every 1s (timer ticks on ESP32)
-        if (now - last_media_sent_ >= MEDIA_INTERVAL) {
+        // Poll SMTC every 500ms for state changes; send MEDIA every 1s for timer,
+        // or immediately if state/track changed
+        if (now - last_media_poll_ >= MEDIA_POLL) {
             media_.update();
+            last_media_poll_ = now;
+            if (media_.changed()) {
+                spdlog::info("Media changed: state={} \"{}\" — \"{}\"",
+                             media_.last().state, media_.last().title, media_.last().artist);
+                send_media();
+                last_media_sent_ = now;
+                media_.clear_changed();
+            }
+        }
+        if (now - last_media_sent_ >= MEDIA_INTERVAL) {
             send_media();
             last_media_sent_ = now;
         }
