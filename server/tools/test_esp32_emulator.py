@@ -292,7 +292,7 @@ class Esp32Emulator:
             pos_str = f"{pos_ms//60000}:{pos_ms//1000%60:02d}"
             dur_str = f"{dur_ms//60000}:{dur_ms//1000%60:02d}" if dur_ms else "-:--"
             return f"state={state_name} {pos_str}/{dur_str} \"{title}\" — \"{artist}\""
-        if msg_type == SYSTEM and len(payload) >= 24:
+        if msg_type == SYSTEM and len(payload) >= 22:
             ts_ms = int.from_bytes(payload[0:8], "little")
             cpu = int.from_bytes(payload[8:10], "little") / 10.0
             cpu_t = int.from_bytes(payload[10:12], "little") / 10.0
@@ -300,13 +300,11 @@ class Esp32Emulator:
             gpu_t = int.from_bytes(payload[14:16], "little") / 10.0
             ram_u = int.from_bytes(payload[16:18], "little")
             ram_t = int.from_bytes(payload[18:20], "little")
-            dsk_u = int.from_bytes(payload[20:22], "little")
-            dsk_t = int.from_bytes(payload[22:24], "little")
-            mb_t = int.from_bytes(payload[24:26], "little") / 10.0
-            net_up = int.from_bytes(payload[26:28], "little") / 10.0
-            net_dn = int.from_bytes(payload[28:30], "little") / 10.0
+            dsk_io = int.from_bytes(payload[20:22], "little") / 10.0
+            net_up = int.from_bytes(payload[22:24], "little") / 10.0
+            net_dn = int.from_bytes(payload[24:26], "little") / 10.0
             return (f"CPU={cpu:.0f}%/{cpu_t:.0f}C GPU={gpu:.0f}%/{gpu_t:.0f}C "
-                    f"RAM={ram_u}/{ram_t}MB Disk={dsk_u}/{dsk_t}GB MB={mb_t:.0f}C "
+                    f"RAM={ram_u}/{ram_t}MB DiskIO={dsk_io:.0f}% "
                     f"NET={net_dn:.1f}/{net_up:.1f}Mbps")
         if msg_type == HEARTBEAT and len(payload) >= 3:
             return f"seq={payload[0]} proto={payload[1]}.{payload[2]}"

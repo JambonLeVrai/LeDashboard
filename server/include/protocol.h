@@ -177,12 +177,10 @@ struct SystemMessageBinary {
     uint16_t gpu_temp_x10;      // 2 — GPU temp °C * 10
     uint16_t ram_used_mb;       // 2 — RAM used MB
     uint16_t ram_total_mb;      // 2 — RAM total MB
-    uint16_t disk_used_gb;      // 2 — disk C: used GB
-    uint16_t disk_total_gb;     // 2 — disk C: total GB
-    uint16_t mb_temp_x10;       // 2 — motherboard temp °C * 10
+    uint16_t disk_io_x10;       // 2 — disk I/O busy % * 10 (all disks, _Total)
     uint16_t net_up_mbps_x10;   // 2 — upload Mbps * 10
     uint16_t net_down_mbps_x10; // 2 — download Mbps * 10
-};  // total: 24 bytes
+};  // total: 22 bytes
 #pragma pack(pop)
 
 struct AckMessage {

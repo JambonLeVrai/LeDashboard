@@ -216,11 +216,10 @@ void DashboardServer::send_media() {
 void DashboardServer::send_system() {
     auto s = system_.snapshot();
     send_frame(MsgType::SYSTEM, reinterpret_cast<const uint8_t *>(&s), sizeof(s));
-    spdlog::debug("-> SYSTEM CPU={:.0f}%/{:.0f}C GPU={:.0f}%/{:.0f}C RAM={}/{}MB Disk={}/{}GB MB={:.0f}C NET={:.1f}/{:.1f}Mbps",
+    spdlog::debug("-> SYSTEM CPU={:.0f}%/{:.0f}C GPU={:.0f}%/{:.0f}C RAM={}/{}MB DiskIO={:.0f}% NET={:.1f}/{:.1f}Mbps",
                   s.cpu_x10 / 10.0, s.cpu_temp_x10 / 10.0,
                   s.gpu_x10 / 10.0, s.gpu_temp_x10 / 10.0,
-                  s.ram_used_mb, s.ram_total_mb,
-                  s.disk_used_gb, s.disk_total_gb, s.mb_temp_x10 / 10.0,
+                  s.ram_used_mb, s.ram_total_mb, s.disk_io_x10 / 10.0,
                   s.net_down_mbps_x10 / 10.0, s.net_up_mbps_x10 / 10.0);
 }
 

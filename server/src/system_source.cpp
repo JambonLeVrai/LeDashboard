@@ -4,7 +4,9 @@
 #ifdef _WIN32
 #include <windows.h>
 #include <iphlpapi.h>
+#include <pdh.h>
 #pragma comment(lib, "iphlpapi.lib")
+#pragma comment(lib, "pdh.lib")
 #endif
 
 #include <chrono>
@@ -115,24 +117,33 @@ void SystemSource::sample_once() {
         free(table);
     }
 
-    // ---- Disk C: via GetDiskFreeSpaceEx ----
-    ULARGE_INTEGER free_avail, total_bytes, total_free;
-    if (GetDiskFreeSpaceExA("C:\\", &free_avail, &total_bytes, &total_free)) {
-        uint64_t used_gb = (total_bytes.QuadPart - total_free.QuadPart) / (1024ULL * 1024 * 1024);
-        uint64_t total_gb = total_bytes.QuadPart / (1024ULL * 1024 * 1024);
-        m.disk_used_gb = static_cast<uint16_t>(used_gb > 65535 ? 65535 : used_gb);
-        m.disk_total_gb = static_cast<uint16_t>(total_gb > 65535 ? 65535 : total_gb);
+    // ---- Disk I/O via PDH: \PhysicalDisk(_Total)\% Disk Time ----
+    m.disk_io_x10 = 0;
+    {
+        PDH_HQUERY query = nullptr;
+        PDH_HCOUNTER counter = nullptr;
+        if (PdhOpenQueryA(nullptr, 0, &query) == ERROR_SUCCESS) {
+            if (PdhAddEnglishCounterA(query, "\\PhysicalDisk(_Total)\\% Disk Time", 0, &counter) == ERROR_SUCCESS) {
+                if (PdhCollectQueryData(query) == ERROR_SUCCESS) {
+                    PdhCollectQueryData(query); // need 2 samples for rate counters
+                    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                    PdhCollectQueryData(query);
+                    PDH_FMT_COUNTERVALUE val;
+                    if (PdhGetFormattedCounterValue(counter, PDH_FMT_DOUBLE, nullptr, &val) == ERROR_SUCCESS) {
+                        double pct = val.doubleValue;
+                        if (pct < 0) pct = 0;
+                        if (pct > 100) pct = 100;
+                        m.disk_io_x10 = static_cast<uint16_t>(pct * 10.0);
+                    }
+                }
+            }
+            PdhCloseQuery(query);
+        }
     }
 
-    // ---- Temperatures via WMI (MSAcpi_ThermalZoneTemperature in root\wmi) ----
-    // Best-effort: often unavailable without admin; set 0 if not found.
-    // CPU temp often available as first thermal zone; MB temp as another.
+    // ---- Temperatures: 0 for now (WMI/PDH TODO) ----
     m.cpu_temp_x10 = 0;
     m.gpu_temp_x10 = 0;
-    m.mb_temp_x10 = 0;
-    // (WMI query would go here; skipped for simplicity — can use OpenHardwareMonitor
-    //  WMI provider or PDH \Thermal Zone Information\Temperature)
-    // GPU: 0 for now (PDH \GPU Engine requires per-process; \Thermal Zone covers system)
 
     {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -141,9 +152,9 @@ void SystemSource::sample_once() {
         dirty_ = true;
     }
 
-    spdlog::debug("System: CPU={:.1f}%/{:.0f}C GPU={:.1f}% RAM={}/{}MB Disk={}/{}GB NET={:.1f}/{:.1f}Mbps",
-                  m.cpu_x10 / 10.0, m.cpu_temp_x10 / 10.0, m.gpu_x10 / 10.0,
-                  m.ram_used_mb, m.ram_total_mb, m.disk_used_gb, m.disk_total_gb,
+    spdlog::debug("System: CPU={:.1f}%/{:.0f}C GPU={:.1f}%/{:.0f}C RAM={}/{}MB DiskIO={:.0f}% NET={:.1f}/{:.1f}Mbps",
+                  m.cpu_x10 / 10.0, m.cpu_temp_x10 / 10.0, m.gpu_x10 / 10.0, m.gpu_temp_x10 / 10.0,
+                  m.ram_used_mb, m.ram_total_mb, m.disk_io_x10 / 10.0,
                   m.net_down_mbps_x10 / 10.0, m.net_up_mbps_x10 / 10.0);
 #endif
 }

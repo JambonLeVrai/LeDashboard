@@ -518,8 +518,10 @@ void create_time_weather_page() {
   lv_obj_set_pos(demain_label, 330, 340);
 }
 
-// Globals for title scroll animation
-lv_obj_t *g_title_label = nullptr;
+// Globals for title scroll animation — one set per page
+lv_obj_t *g_title_label[2] = {nullptr, nullptr};
+lv_obj_t *g_timer_label[2] = {nullptr, nullptr};
+lv_obj_t *g_play_icon[2] = {nullptr, nullptr};
 int32_t g_title_scroll_dist = 0;
 #define TITLE_SCROLL_SPEED_PX_S  60
 #define TITLE_PAUSE_MS           2000
@@ -573,22 +575,21 @@ struct SysMetric {
 };
 
 // Metrics shown on page 2 (2 columns x 4 rows)
-// Order: CPU%, CPU°C, GPU%, GPU°C, RAM GB, Disk GB, Net↓ Mbps, Net↑ Mbps, MB°C
+// Order: CPU%, CPU°C, GPU%, GPU°C, RAM(used/total), Disk I/O%, Net↓, Net↑
 enum {
   M_CPU_USAGE, M_CPU_TEMP, M_GPU_USAGE, M_GPU_TEMP,
-  M_RAM, M_DISK, M_NET_DOWN, M_NET_UP, M_MB_TEMP, M_COUNT
+  M_RAM, M_DISK_IO, M_NET_DOWN, M_NET_UP, M_COUNT
 };
 
 static SysMetric g_metrics[M_COUNT] = {
-  {"CPU",       "%",  30.0f, 30.0f, 0, 1.0f,     "%.0f"},
-  {"CPU Temp",  "°C", 45.0f, 45.0f, 0, 1.0f,     "%.0f"},
-  {"GPU",       "%",  10.0f, 10.0f, 0, 1.0f,     "%.0f"},
-  {"GPU Temp",  "°C", 50.0f, 50.0f, 0, 1.0f,     "%.0f"},
-  {"RAM",       "GB", 16.0f, 16.0f, 1, 0.001f,   "%.1f"},   // stored as MB internally? no, GB directly
-  {"Disk C:",   "GB", 200.0f,200.0f,0, 1.0f,     "%.0f"},
-  {"Net Down",  "Mbps",500.0f,500.0f,1,1.0f,    "%.1f"},
-  {"Net Up",    "Mbps",50.0f, 50.0f, 1, 1.0f,     "%.1f"},
-  {"MB Temp",   "°C", 35.0f, 35.0f, 0, 1.0f,     "%.0f"},
+  {"CPU",       "%",    30.0f, 30.0f, 0, 1.0f,   "%.0f"},
+  {"CPU Temp",  "°C",   45.0f, 45.0f, 0, 1.0f,   "%.0f"},
+  {"GPU",       "%",    10.0f, 10.0f, 0, 1.0f,   "%.0f"},
+  {"GPU Temp",  "°C",   50.0f, 50.0f, 0, 1.0f,   "%.0f"},
+  {"RAM",       "GB",   16.0f, 48.0f, 0, 1.0f,   "%.1f/%.1f"},  // special: used/total
+  {"Disk I/O",  "%",    15.0f, 15.0f, 0, 1.0f,   "%.0f"},
+  {"Net Down",  "Mbps", 500.0f,500.0f,1, 1.0f,   "%.1f"},
+  {"Net Up",    "Mbps", 50.0f, 50.0f, 1, 1.0f,   "%.1f"},
 };
 
 static lv_obj_t *g_sys_time_label = nullptr;
@@ -608,9 +609,8 @@ static void update_dummy_system() {
         case M_CPU_USAGE: case M_GPU_USAGE: range = 100.0f; break;
         case M_CPU_TEMP: range = 85.0f; break;
         case M_GPU_TEMP: range = 90.0f; break;
-        case M_MB_TEMP:  range = 60.0f; break;
-        case M_RAM:      range = 48.0f; break;
-        case M_DISK:     range = 950.0f; break;
+        case M_RAM:      range = 48.0f; break;  // GB
+        case M_DISK_IO:  range = 100.0f; break;
         case M_NET_DOWN: range = 1000.0f; break;
         case M_NET_UP:   range = 100.0f; break;
         default: range = 100.0f;
@@ -621,12 +621,18 @@ static void update_dummy_system() {
 
     // Update label if it exists
     if (g_metric_value_labels[i]) {
-      char buf[24];
-      snprintf(buf, sizeof(buf), g_metrics[i].fmt, g_metrics[i].value * g_metrics[i].scale);
-      // Append unit
-      char full[32];
-      snprintf(full, sizeof(full), "%s %s", buf, g_metrics[i].unit);
-      lv_label_set_text(g_metric_value_labels[i], full);
+      char buf[32];
+      if (i == M_RAM) {
+        // RAM: show used/total in GB
+        snprintf(buf, sizeof(buf), "%.1f/%.1f GB", g_metrics[i].value, 48.0f);
+      } else {
+        snprintf(buf, sizeof(buf), g_metrics[i].fmt, g_metrics[i].value * g_metrics[i].scale);
+        char full[40];
+        snprintf(full, sizeof(full), "%s %s", buf, g_metrics[i].unit);
+        strncpy(buf, full, sizeof(buf) - 1);
+        buf[sizeof(buf) - 1] = '\0';
+      }
+      lv_label_set_text(g_metric_value_labels[i], buf);
     }
   }
 
@@ -685,9 +691,9 @@ static void create_system_page() {
   lv_obj_set_style_text_color(g_sys_time_label, lv_color_hex(0x212121), 0);
   lv_label_set_text(g_sys_time_label, "--:--");
 
-  // Grid container: 2 columns x 5 rows
+  // Grid container: 2 columns x 4 rows (leaves room for media bar at bottom)
   lv_obj_t *grid = lv_obj_create(g_page2);
-  lv_obj_set_size(grid, 464, 420);
+  lv_obj_set_size(grid, 464, 368);
   lv_obj_set_style_bg_opa(grid, LV_OPA_TRANSP, 0);
   lv_obj_set_style_border_width(grid, 0, 0);
   lv_obj_set_style_pad_all(grid, 0, 0);
@@ -696,7 +702,7 @@ static void create_system_page() {
   lv_obj_set_layout(grid, LV_LAYOUT_GRID);
 
   static int32_t col_dsc[] = {229, 229, LV_GRID_TEMPLATE_LAST};
-  static int32_t row_dsc[] = {80, 80, 80, 80, 80, LV_GRID_TEMPLATE_LAST};
+  static int32_t row_dsc[] = {86, 86, 86, 86, LV_GRID_TEMPLATE_LAST};
   lv_obj_set_style_grid_column_dsc_array(grid, col_dsc, 0);
   lv_obj_set_style_grid_row_dsc_array(grid, row_dsc, 0);
 
@@ -708,13 +714,8 @@ static void create_system_page() {
 // =============================================================================
 
 // Globals for media player state (server-driven)
-lv_obj_t *g_timer_label = nullptr;
-lv_obj_t *g_play_icon = nullptr;
-
-// Media sync anchor: server sends position_ms + timestamp_ms; we compute
-// current_pos = position_ms + (server_now_ms - timestamp_ms)
-static uint64_t media_anchor_server_ms = 0;  // server UTC ms at reception
-static uint32_t media_anchor_local_ms  = 0;  // our millis() at reception
+static uint64_t media_anchor_server_ms = 0;
+static uint32_t media_anchor_local_ms  = 0;
 static uint32_t media_position_ms      = 0;
 static uint32_t media_duration_ms      = 0;
 static uint8_t  media_state            = MEDIA_STOPPED;
@@ -742,7 +743,7 @@ static uint32_t current_position_ms() {
 
 // Start the scroll animation at fixed speed, then handle end-pause and loop
 void start_title_scroll() {
-  if (g_title_label == nullptr || g_title_scroll_dist <= 0) return;
+  if (g_title_label[g_current_page] == nullptr || g_title_scroll_dist <= 0) return;
   
   // Fixed speed: duration = distance / speed
   int32_t duration_ms = (g_title_scroll_dist * 1000) / TITLE_SCROLL_SPEED_PX_S;
@@ -750,7 +751,7 @@ void start_title_scroll() {
   
   lv_anim_t a;
   lv_anim_init(&a);
-  lv_anim_set_var(&a, g_title_label);
+  lv_anim_set_var(&a, g_title_label[g_current_page]);
   lv_anim_set_exec_cb(&a, [](void* var, int32_t v) {
     lv_obj_set_x((lv_obj_t*)var, v);
   });
@@ -765,7 +766,7 @@ void start_title_scroll() {
     lv_timer_create([](lv_timer_t* t) {
       lv_timer_delete(t);
       // Pop back to start instantly
-      lv_obj_set_x(g_title_label, 0);
+      lv_obj_set_x(g_title_label[g_current_page], 0);
       // Pause 2s at start, then scroll again
       lv_timer_create([](lv_timer_t* t2) {
         lv_timer_delete(t2);
@@ -818,20 +819,29 @@ void on_server_media(const MediaMessageBinary *hdr, const char *title, const cha
       snprintf(display, sizeof(display), "%s", media_title);
     }
 
-    if (g_title_label) {
-      lv_label_set_text(g_title_label, display);
-      lv_obj_update_layout(g_title_label);
-      int32_t text_width = lv_obj_get_content_width(g_title_label);
-      g_title_scroll_dist = text_width - 320;
-      if (g_title_scroll_dist < 0) g_title_scroll_dist = 0;
-      lv_obj_set_x(g_title_label, 0);
-      start_title_scroll_initial();
+    // Update title on BOTH pages
+    for (int p = 0; p < 2; p++) {
+      if (g_title_label[p]) {
+        lv_label_set_text(g_title_label[p], display);
+        lv_obj_update_layout(g_title_label[p]);
+        if (p == g_current_page) {
+          int32_t text_width = lv_obj_get_content_width(g_title_label[p]);
+          g_title_scroll_dist = text_width - 320;
+          if (g_title_scroll_dist < 0) g_title_scroll_dist = 0;
+          lv_obj_set_x(g_title_label[p], 0);
+          start_title_scroll_initial();
+        }
+      }
     }
   }
 
-  // Only update icon if state changed
-  if (state_changed && g_play_icon) {
-    lv_image_set_src(g_play_icon, hdr->state == MEDIA_PLAYING ? &play_16 : &pause_16);
+  // Update icon on BOTH pages
+  if (state_changed) {
+    for (int p = 0; p < 2; p++) {
+      if (g_play_icon[p]) {
+        lv_image_set_src(g_play_icon[p], hdr->state == MEDIA_PLAYING ? &play_16 : &pause_16);
+      }
+    }
   }
 
   media_state = hdr->state;
@@ -845,7 +855,7 @@ void on_server_media(const MediaMessageBinary *hdr, const char *title, const cha
 
 // Update media timer display (called every loop, but only writes when second changes)
 void update_media() {
-  if (!g_timer_label || !media_has_data) return;
+  if (!media_has_data) return;
 
   uint32_t pos = current_position_ms();
   uint32_t dur = media_duration_ms;
@@ -862,15 +872,17 @@ void update_media() {
     snprintf(timer_str, sizeof(timer_str), "%d:%02d/%d:%02d", pos_m, pos_s, tot_m, tot_s);
   }
   if (strcmp(timer_str, last_timer) != 0) {
-    lv_label_set_text(g_timer_label, timer_str);
+    // Update timer on BOTH pages
+    for (int p = 0; p < 2; p++) {
+      if (g_timer_label[p]) lv_label_set_text(g_timer_label[p], timer_str);
+    }
     strncpy(last_timer, timer_str, sizeof(last_timer) - 1);
     last_timer[sizeof(last_timer) - 1] = '\0';
   }
 }
 
-// Create the media player bar at the bottom of the screen
-void create_media_player() {
-  lv_obj_t *page = g_page1;  // media bar belongs to page 1
+// Create the media player bar at the bottom of a page
+void create_media_player(lv_obj_t *page, int page_idx) {
   
   // Media player container - hard rectangle 480x50 at bottom, non-scrollable, full width
   // Position: x=0, y=480-50=430
@@ -911,7 +923,7 @@ void create_media_player() {
   int32_t scroll_dist = text_width - 320;
   if (scroll_dist < 0) scroll_dist = 0;
   
-  g_title_label = title_label;
+  g_title_label[page_idx] = title_label;
   g_title_scroll_dist = scroll_dist;
   start_title_scroll_initial();
   
@@ -929,9 +941,9 @@ void create_media_player() {
   lv_obj_t *play_icon = lv_image_create(media_bar);
   lv_image_set_src(play_icon, &play_16);
   lv_obj_set_pos(play_icon, 456, 5);
-  g_play_icon = play_icon;
+  g_play_icon[page_idx] = play_icon;
   
-  g_timer_label = timer_label;
+  g_timer_label[page_idx] = timer_label;
   // g_media_last_update removed — timer is server-anchored now
 }
 
@@ -1049,8 +1061,9 @@ void setup()
   
   // Build GUI - Page 1 (time+weather) and Page 2 (system monitor)
   create_time_weather_page();
-  create_media_player();
+  create_media_player(g_page1, 0);   // media bar on page 1
   create_system_page();
+  create_media_player(g_page2, 1);   // media bar on page 2 (same layout)
 
   // Load page 1 as the active screen
   lv_screen_load(g_page1);
