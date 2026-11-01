@@ -648,7 +648,7 @@ static void update_dummy_system() {
 static lv_obj_t *create_metric_card(lv_obj_t *parent, int col, int row, int idx) {
   lv_obj_t *card = lv_obj_create(parent);
   lv_obj_set_style_bg_color(card, lv_color_hex(0xFFFFFF), 0);
-  lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
+  lv_obj_set_style_bg_opa(card, 166, 0);  // 65% opaque — lets background show through
   lv_obj_set_style_radius(card, 8, 0);
   lv_obj_set_style_border_width(card, 0, 0);
   lv_obj_set_style_pad_all(card, 8, 0);
