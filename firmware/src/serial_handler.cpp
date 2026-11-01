@@ -29,6 +29,10 @@ SerialHandler::SerialHandler()
 
 void SerialHandler::begin(unsigned long baud_rate) {
     Serial.begin(baud_rate);
+    // Flush any stale bytes that arrived during boot (before loop() started)
+    while (Serial.available()) {
+        Serial.read();
+    }
     decoder_init(&decoder_, on_frame_static, on_error_static);
     last_hb_sent_ = millis();
     last_hb_received_ = millis();

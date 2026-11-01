@@ -34,9 +34,9 @@ bool DashboardServer::initialize(const std::string &port_name, uint32_t baud_rat
     }
 
     auto now = std::chrono::steady_clock::now();
-    last_hb_sent_       = now;
+    last_hb_sent_       = now - HB_INTERVAL;   // send HEARTBEAT immediately on first loop
     last_hb_received_   = now;
-    last_time_sent_     = now;
+    last_time_sent_     = now - TIME_INTERVAL; // send TIME immediately on first loop
 
     spdlog::info("DashboardServer initialized on {} @ {} (weather: {})", port_name, baud_rate, weather_location);
     return true;
@@ -221,7 +221,8 @@ void DashboardServer::on_frame(const DecodedFrame &frame) {
             if (!connected_) {
                 connected_ = true;
                 weather_dirty_ = true;  // send weather on connect so ESP32 gets initial data
-                spdlog::info("ESP32 connected (heartbeat received)");
+                send_time();            // send TIME immediately so ESP32 syncs right away
+                spdlog::info("ESP32 connected (heartbeat received, time+weather sent)");
             }
             uint8_t seq = frame.payload.size() > 0 ? frame.payload[0] : 0;
             spdlog::debug("   HEARTBEAT seq={}", seq);
