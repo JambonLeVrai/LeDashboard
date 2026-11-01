@@ -644,17 +644,19 @@ void create_media_player() {
   g_media_last_update = millis();
 }
 
-// Initialize dummy weather data
+// Initialize dummy weather data.
+// Comparison fields use sentinel values (0xFF / -999) so the first real
+// WEATHER message always triggers a UI update regardless of actual values.
 void init_dummy_weather() {
-  current_weather.current_temp = 22.0f;
-  current_weather.tomorrow_min = 8.0f;
-  current_weather.tomorrow_max = 15.0f;
-  current_weather.condition = "Partiellement nuageux";
-  current_weather.humidity = 65;
-  current_weather.air_quality = 30;
-  current_weather.uv_index = 3;
-  current_weather.condition_id = 2;       // partly cloudy
-  current_weather.tomorrow_condition = 0; // sunny
+  current_weather.current_temp = -999.0f;
+  current_weather.tomorrow_min = -999.0f;
+  current_weather.tomorrow_max = -999.0f;
+  current_weather.condition = "";
+  current_weather.humidity = 0xFF;
+  current_weather.air_quality = 0xFF;
+  current_weather.uv_index = 0xFF;
+  current_weather.condition_id = 0xFF;
+  current_weather.tomorrow_condition = 0xFF;
 }
 
 // Initialize dummy time
