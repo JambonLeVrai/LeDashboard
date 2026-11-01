@@ -588,60 +588,73 @@ void start_title_scroll_initial() {
   }, TITLE_PAUSE_MS, nullptr);
 }
 
-// Called by SerialHandler when a MEDIA message arrives from the server
+// Called by SerialHandler when a MEDIA message arrives from the server.
+// Only updates LVGL objects when values actually changed (runs every 1s!).
 void on_server_media(const MediaMessageBinary *hdr, const char *title, const char *artist) {
-  // Anchor the timer: server UTC ms + our local millis at reception
+  // Anchor the timer
   media_anchor_server_ms = hdr->timestamp_ms + (uint64_t)server_tz_min * 60ULL * 1000ULL;
   media_anchor_local_ms  = millis();
   media_position_ms      = hdr->position_ms;
   media_duration_ms      = hdr->duration_ms;
-  media_state            = hdr->state;
   media_has_data         = true;
 
-  // Copy title/artist (null-terminated for LVGL)
+  // Copy title/artist
   size_t tl = hdr->title_len < 255 ? hdr->title_len : 255;
   size_t al = hdr->artist_len < 255 ? hdr->artist_len : 255;
-  memcpy(media_title, title, tl);  media_title[tl] = '\0';
-  memcpy(media_artist, artist, al); media_artist[al] = '\0';
+  char new_title[256], new_artist[256];
+  memcpy(new_title, title, tl);  new_title[tl] = '\0';
+  memcpy(new_artist, artist, al); new_artist[al] = '\0';
 
-  // Build display string: "Title — Artist" or "—" if stopped
-  char display[512];
-  if (media_state == MEDIA_STOPPED || (tl == 0 && al == 0)) {
-    snprintf(display, sizeof(display), "\xE2\x80\x94"); // em dash
-  } else if (al > 0) {
-    snprintf(display, sizeof(display), "%s \xE2\x80\x94 %s", media_title, media_artist);
-  } else {
-    snprintf(display, sizeof(display), "%s", media_title);
+  // Only update title + scroll if track changed
+  bool track_changed = (strcmp(new_title, media_title) != 0 || strcmp(new_artist, media_artist) != 0);
+  bool state_changed = (media_state != hdr->state);
+
+  if (track_changed) {
+    memcpy(media_title, new_title, tl + 1);
+    memcpy(media_artist, new_artist, al + 1);
+
+    char display[512];
+    if (hdr->state == MEDIA_STOPPED || (tl == 0 && al == 0)) {
+      snprintf(display, sizeof(display), "\xE2\x80\x94"); // em dash
+    } else if (al > 0) {
+      snprintf(display, sizeof(display), "%s \xE2\x80\x94 %s", media_title, media_artist);
+    } else {
+      snprintf(display, sizeof(display), "%s", media_title);
+    }
+
+    if (g_title_label) {
+      lv_label_set_text(g_title_label, display);
+      lv_obj_update_layout(g_title_label);
+      int32_t text_width = lv_obj_get_content_width(g_title_label);
+      g_title_scroll_dist = text_width - 320;
+      if (g_title_scroll_dist < 0) g_title_scroll_dist = 0;
+      lv_obj_set_x(g_title_label, 0);
+      start_title_scroll_initial();
+    }
   }
 
-  // Update title label and restart scroll animation
-  if (g_title_label) {
-    lv_label_set_text(g_title_label, display);
-    lv_obj_update_layout(g_title_label);
-    int32_t text_width = lv_obj_get_content_width(g_title_label);
-    g_title_scroll_dist = text_width - 320;
-    if (g_title_scroll_dist < 0) g_title_scroll_dist = 0;
-    lv_obj_set_x(g_title_label, 0);
-    start_title_scroll_initial();
+  // Only update icon if state changed
+  if (state_changed && g_play_icon) {
+    lv_image_set_src(g_play_icon, hdr->state == MEDIA_PLAYING ? &play_16 : &pause_16);
   }
 
-  // Update play/pause icon
-  if (g_play_icon) {
-    lv_image_set_src(g_play_icon, media_state == MEDIA_PLAYING ? &play_16 : &pause_16);
-  }
+  media_state = hdr->state;
 
-  // Timer will be updated in update_media()
-  Serial.printf("[MAIN] MEDIA: state=%d pos=%ums/%ums \"%s\"\n",
-                media_state, media_position_ms, media_duration_ms, display);
+  if (track_changed || state_changed) {
+    Serial.printf("[MAIN] MEDIA: state=%d pos=%ums/%ums \"%s\" — \"%s\"\n",
+                  hdr->state, hdr->position_ms, hdr->duration_ms, media_title, media_artist);
+  }
+  // Timer label is updated cheaply in update_media() every loop
 }
 
-// Update media timer display (called every loop)
+// Update media timer display (called every loop, but only writes when second changes)
 void update_media() {
   if (!g_timer_label || !media_has_data) return;
 
   uint32_t pos = current_position_ms();
   uint32_t dur = media_duration_ms;
 
+  static char last_timer[20] = "";
   char timer_str[20];
   if (media_state == MEDIA_STOPPED || dur == 0) {
     snprintf(timer_str, sizeof(timer_str), "-:--/-:--");
@@ -652,7 +665,11 @@ void update_media() {
     int tot_s = (dur / 1000) % 60;
     snprintf(timer_str, sizeof(timer_str), "%d:%02d/%d:%02d", pos_m, pos_s, tot_m, tot_s);
   }
-  lv_label_set_text(g_timer_label, timer_str);
+  if (strcmp(timer_str, last_timer) != 0) {
+    lv_label_set_text(g_timer_label, timer_str);
+    strncpy(last_timer, timer_str, sizeof(last_timer) - 1);
+    last_timer[sizeof(last_timer) - 1] = '\0';
+  }
 }
 
 // Create the media player bar at the bottom of the screen
