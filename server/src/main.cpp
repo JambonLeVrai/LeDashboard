@@ -88,6 +88,8 @@ static Config load_config(int argc, char *argv[]) {
             cfg.baud_rate = std::stoul(argv[++i]);
         } else if (arg == "--city" && i + 1 < argc) {
             cfg.weather_location = argv[++i];
+        } else if ((arg == "--log-level" || arg == "-l") && i + 1 < argc) {
+            cfg.log_level = argv[++i];
         } else if (arg == "--config" && i + 1 < argc) {
             std::ifstream f(argv[++i]);
             if (f) {
@@ -99,8 +101,10 @@ static Config load_config(int argc, char *argv[]) {
                 }
             }
         } else if (arg == "--help" || arg == "-h") {
-            std::cout << "Usage: ledashboard_server [--port COMx] [--baud N] [--city \"City Name\"] [--config file.json]\n";
-            std::cout << "  Default port: COM3, baud: 115200, city: Paris\n";
+            std::cout << "Usage: ledashboard_server [--port COMx] [--baud N] [--city \"City Name\"] [--log-level LEVEL] [--config file.json]\n";
+            std::cout << "  Default: port=COM3, baud=115200, city=Paris, log-level=info\n";
+            std::cout << "  Log levels: trace, debug, info, warn, error, off\n";
+            std::cout << "  Example: --log-level debug   (shows every MEDIA/TIME/WEATHER frame)\n";
             std::cout << "  Weather: Open-Meteo (no API key needed)\n";
             std::exit(0);
         }

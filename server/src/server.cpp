@@ -190,16 +190,15 @@ void DashboardServer::send_media() {
     send_frame(MsgType::MEDIA, payload);
     auto m = media_.snapshot();
     if (m.valid) {
-        // Format timer as M:SS/M:SS for easy comparison with ESP32 display
         auto fmt = [](uint32_t ms) {
             return fmt::format("{}:{:02d}", ms / 60000, (ms / 1000) % 60);
         };
-        spdlog::info("-> MEDIA [{}] {}/{} \"{}\" — \"{}\"{}",
+        spdlog::debug("-> MEDIA [{}] {}/{} \"{}\" — \"{}\"{}",
                       m.state == MEDIA_PLAYING ? "PLAY" : m.state == MEDIA_PAUSED ? "PAUSE" : "STOP",
                       fmt(m.position_ms), fmt(m.duration_ms),
                       m.title, m.artist, m.is_spotify ? " [spotify]" : "");
     } else {
-        spdlog::info("-> MEDIA [STOP] no active session");
+        spdlog::debug("-> MEDIA [STOP] no active session");
     }
 }
 
