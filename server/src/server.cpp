@@ -30,14 +30,13 @@ bool DashboardServer::initialize(const std::string &port_name, uint32_t baud_rat
     if (!weather_.initialize(weather_location)) {
         spdlog::warn("Weather source init failed: {} — continuing without weather", weather_.last_error());
     } else {
-        weather_.set_update_interval(std::chrono::seconds(600)); // refetch every 10 min
+        weather_.set_update_interval(std::chrono::seconds(3600)); // refetch every 1 hour
     }
 
     auto now = std::chrono::steady_clock::now();
     last_hb_sent_       = now;
     last_hb_received_   = now;
     last_time_sent_     = now;
-    last_weather_sent_  = now - WEATHER_INTERVAL; // send weather immediately on first loop
 
     spdlog::info("DashboardServer initialized on {} @ {} (weather: {})", port_name, baud_rate, weather_location);
     return true;
@@ -62,13 +61,15 @@ void DashboardServer::run() {
             last_time_sent_ = now;
         }
 
-        // Update weather from API if needed, then send to ESP32
+        // Update weather from API if needed (hourly), then send only if data changed
         if (weather_.needs_update()) {
-            weather_.update();
+            if (weather_.update()) {
+                weather_dirty_ = true;  // new data → send WEATHER frame once
+            }
         }
-        if (weather_.has_data() && now - last_weather_sent_ >= WEATHER_INTERVAL) {
+        if (weather_dirty_ && weather_.has_data()) {
             send_weather();
-            last_weather_sent_ = now;
+            weather_dirty_ = false;
         }
 
         // Check connection timeout
@@ -219,6 +220,7 @@ void DashboardServer::on_frame(const DecodedFrame &frame) {
             last_hb_received_ = std::chrono::steady_clock::now();
             if (!connected_) {
                 connected_ = true;
+                weather_dirty_ = true;  // send weather on connect so ESP32 gets initial data
                 spdlog::info("ESP32 connected (heartbeat received)");
             }
             uint8_t seq = frame.payload.size() > 0 ? frame.payload[0] : 0;

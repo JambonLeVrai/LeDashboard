@@ -58,6 +58,8 @@ struct WeatherData {
     uint8_t humidity;
     uint8_t air_quality; // 0-5 scale for French QA
     uint8_t uv_index;
+    uint8_t condition_id;       // current weather condition (COND_*)
+    uint8_t tomorrow_condition; // tomorrow condition (COND_*)
 };
 
 // French day and month names
@@ -246,51 +248,61 @@ static const lv_image_dsc_t *condition_to_icon(uint8_t cond) {
   }
 }
 
-// Called by SerialHandler when a WEATHER message arrives from the server
+// Called by SerialHandler when a WEATHER message arrives from the server.
+// Only updates LVGL objects when values actually changed (avoids re-render lag).
 void on_server_weather(const WeatherMessageBinary *w) {
-  // Current conditions
-  if (weather_icon) lv_image_set_src(weather_icon, condition_to_icon(w->condition_id));
-  if (temp_label) {
+  // Current conditions — compare before touching LVGL
+  if (weather_icon && current_weather.condition_id != w->condition_id) {
+    lv_image_set_src(weather_icon, condition_to_icon(w->condition_id));
+  }
+  float new_temp = w->temp_x10 / 10.0f;
+  if (temp_label && current_weather.current_temp != new_temp) {
     char buf[12];
-    snprintf(buf, sizeof(buf), "%.1f°C", w->temp_x10 / 10.0f);
+    snprintf(buf, sizeof(buf), "%.1f°C", new_temp);
     lv_label_set_text(temp_label, buf);
   }
-  if (rh_label) {
+  if (rh_label && current_weather.humidity != w->humidity) {
     char buf[8];
     snprintf(buf, sizeof(buf), "%d%%", w->humidity);
     lv_label_set_text(rh_label, buf);
   }
-  if (aq_label) {
+  uint16_t new_aqi = w->air_quality;
+  if (aq_label && current_weather.air_quality != (new_aqi > 255 ? 255 : new_aqi)) {
     char buf[8];
-    snprintf(buf, sizeof(buf), "%d", w->air_quality);
+    snprintf(buf, sizeof(buf), "%d", new_aqi);
     lv_label_set_text(aq_label, buf);
   }
-  if (uv_label) {
+  if (uv_label && current_weather.uv_index != w->uv_index) {
     char buf[4];
     snprintf(buf, sizeof(buf), "%d", w->uv_index);
     lv_label_set_text(uv_label, buf);
   }
 
   // Tomorrow forecast
-  if (tomorrow_icon) lv_image_set_src(tomorrow_icon, condition_to_icon(w->tomorrow_condition));
-  if (tomorrow_temp) {
+  if (tomorrow_icon && current_weather.tomorrow_condition != w->tomorrow_condition) {
+    lv_image_set_src(tomorrow_icon, condition_to_icon(w->tomorrow_condition));
+  }
+  float new_tmr_max = w->tomorrow_max_x10 / 10.0f;
+  float new_tmr_min = w->tomorrow_min_x10 / 10.0f;
+  if (tomorrow_temp && (current_weather.tomorrow_max != new_tmr_max ||
+                        current_weather.tomorrow_min != new_tmr_min)) {
     char buf[16];
-    snprintf(buf, sizeof(buf), "%.0f/%.0f°C",
-             w->tomorrow_max_x10 / 10.0f, w->tomorrow_min_x10 / 10.0f);
+    snprintf(buf, sizeof(buf), "%.0f/%.0f°C", new_tmr_max, new_tmr_min);
     lv_label_set_text(tomorrow_temp, buf);
   }
 
-  // Update the dummy weather struct too (for any code still reading it)
-  current_weather.current_temp   = w->temp_x10 / 10.0f;
-  current_weather.tomorrow_min   = w->tomorrow_min_x10 / 10.0f;
-  current_weather.tomorrow_max   = w->tomorrow_max_x10 / 10.0f;
-  current_weather.humidity       = w->humidity;
-  current_weather.air_quality    = w->air_quality > 255 ? 255 : w->air_quality;
-  current_weather.uv_index       = w->uv_index;
+  // Store for next comparison
+  current_weather.current_temp     = new_temp;
+  current_weather.tomorrow_min     = new_tmr_min;
+  current_weather.tomorrow_max     = new_tmr_max;
+  current_weather.condition_id     = w->condition_id;
+  current_weather.tomorrow_condition = w->tomorrow_condition;
+  current_weather.humidity         = w->humidity;
+  current_weather.air_quality      = new_aqi > 255 ? 255 : new_aqi;
+  current_weather.uv_index         = w->uv_index;
 
   Serial.printf("[MAIN] Weather: %.1fC RH=%d%% AQI=%d UV=%d tmr=%.0f/%.0fC\n",
-                w->temp_x10 / 10.0f, w->humidity, w->air_quality, w->uv_index,
-                w->tomorrow_max_x10 / 10.0f, w->tomorrow_min_x10 / 10.0f);
+                new_temp, w->humidity, new_aqi, w->uv_index, new_tmr_max, new_tmr_min);
 }
 
 // Advance time display using millisecond-precise server sync.
@@ -639,8 +651,10 @@ void init_dummy_weather() {
   current_weather.tomorrow_max = 15.0f;
   current_weather.condition = "Partiellement nuageux";
   current_weather.humidity = 65;
-  current_weather.air_quality = 30; // Good quality
+  current_weather.air_quality = 30;
   current_weather.uv_index = 3;
+  current_weather.condition_id = 2;       // partly cloudy
+  current_weather.tomorrow_condition = 0; // sunny
 }
 
 // Initialize dummy time

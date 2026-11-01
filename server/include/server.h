@@ -67,12 +67,12 @@ private:
     std::chrono::steady_clock::time_point last_hb_sent_;
     std::chrono::steady_clock::time_point last_hb_received_;
     std::chrono::steady_clock::time_point last_time_sent_;
-    std::chrono::steady_clock::time_point last_weather_sent_;
 
     static constexpr auto HB_INTERVAL      = std::chrono::seconds(5);
     static constexpr auto TIME_INTERVAL    = std::chrono::seconds(1);
-    static constexpr auto WEATHER_INTERVAL = std::chrono::seconds(1); // send if data available; refetch every 10min internally
     static constexpr auto HB_TIMEOUT       = std::chrono::seconds(15);
+    // Weather: send only after a refetch (or once on connect), not on a timer
+    std::atomic<bool> weather_dirty_{true};  // true = send WEATHER on next loop
 
     std::mutex send_mutex_;
 };
