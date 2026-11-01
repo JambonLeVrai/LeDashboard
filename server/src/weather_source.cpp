@@ -95,7 +95,19 @@ bool WeatherSource::needs_update() const {
 
 bool WeatherSource::update() {
     if (!fetch_forecast()) return false;
-    fetch_air_quality(); // non-fatal if it fails
+    fetch_air_quality(); // non-fatal if it fails; updates last_msg_.air_quality
+
+    // Log after both fetches so AQI is included
+    {
+        auto &m = last_msg_;
+        spdlog::info("Weather NOW:  {:.1f}C (feels {:.1f}C), RH {}%, wind {:.1f} m/s @ {}°, cond={}, UV={}, AQI={}, P={:.1f}hPa",
+                     m.temp_x10 / 10.0, m.feels_like_x10 / 10.0, m.humidity,
+                     m.wind_speed_x10 / 10.0, m.wind_direction, m.condition_id,
+                     m.uv_index, m.air_quality, m.pressure_x10 / 10.0);
+        spdlog::info("Weather TMROW: {:.1f}/{:.1f}C, cond={}",
+                     m.tomorrow_min_x10 / 10.0, m.tomorrow_max_x10 / 10.0, m.tomorrow_condition);
+    }
+
     last_update_ = std::chrono::steady_clock::now();
     has_data_ = true;
     return true;
@@ -156,10 +168,6 @@ bool WeatherSource::fetch_forecast() {
         m.tomorrow_condition = map_wmo_code(tmr_wmo);
         m.pressure_x10 = static_cast<uint16_t>(std::lround(pressure * 10.0));
 
-        spdlog::info("Weather: {}°C (feels {}°C), RH {}%, wind {} m/s @ {}°, cond={}, UV={}, "
-                     "tomorrow {}/{}°C cond={}",
-                     temp, feels, humidity, wind_spd, wind_dir, m.condition_id,
-                     m.uv_index, tmr_min, tmr_max, m.tomorrow_condition);
         return true;
 
     } catch (const std::exception &e) {
