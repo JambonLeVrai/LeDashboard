@@ -666,9 +666,61 @@ static void create_system_page() {
     lv_obj_align(g_charts[i], LV_ALIGN_BOTTOM_MID, 0, 0);
     lv_chart_set_type(g_charts[i], LV_CHART_TYPE_LINE);
     lv_chart_set_point_count(g_charts[i], CHART_POINTS);
-    lv_chart_set_range(g_charts[i], LV_CHART_AXIS_PRIMARY_Y, 0, i < 2 ? 100 : (i == 2 ? 500 : 500));
-    lv_chart_set_div_line_count(g_charts[i], 4, 4);
+    int32_t y_max = (i < 2) ? 100 : 500;  // CPU/GPU: 0-100%, RAM/NET: scaled 0-500
+    lv_chart_set_range(g_charts[i], LV_CHART_AXIS_PRIMARY_Y, 0, y_max);
+    lv_chart_set_div_line_count(g_charts[i], 4, 8);
     lv_chart_set_update_mode(g_charts[i], LV_CHART_UPDATE_MODE_SHIFT);
+
+    // Y-axis scale numbers (max top-left, mid, min bottom-left of chart)
+    int32_t y_mid = y_max / 2;
+    // Actual unscaled values for display
+    int32_t y_max_real = (i < 2) ? 100 : (i == 2 ? (int32_t)g_dummy_targets[2] : 0);
+    // For RAM show GB, for NET show KB/s
+    char ymax_str[16], ymid_str[16], ymin_str[16];
+    if (i == 2) { // RAM
+      snprintf(ymax_str, sizeof(ymax_str), "%.0fG", y_max * 100.0f / 1024.0f);
+      snprintf(ymid_str, sizeof(ymid_str), "%.0fG", y_mid * 100.0f / 1024.0f);
+      snprintf(ymin_str, sizeof(ymin_str), "0");
+    } else if (i == 3) { // NET
+      snprintf(ymax_str, sizeof(ymax_str), "%dK", y_max * 10);
+      snprintf(ymid_str, sizeof(ymid_str), "%dK", y_mid * 10);
+      snprintf(ymin_str, sizeof(ymin_str), "0");
+    } else { // CPU/GPU
+      snprintf(ymax_str, sizeof(ymax_str), "%d%%", y_max);
+      snprintf(ymid_str, sizeof(ymid_str), "%d%%", y_mid);
+      snprintf(ymin_str, sizeof(ymin_str), "0");
+    }
+
+    lv_obj_t *yl_max = lv_label_create(cell);
+    lv_obj_set_style_text_font(yl_max, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(yl_max, lv_color_hex(0x9E9E9E), 0);
+    lv_label_set_text(yl_max, ymax_str);
+    lv_obj_align(yl_max, LV_ALIGN_TOP_RIGHT, -2, 16);
+
+    lv_obj_t *yl_mid = lv_label_create(cell);
+    lv_obj_set_style_text_font(yl_mid, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(yl_mid, lv_color_hex(0x9E9E9E), 0);
+    lv_label_set_text(yl_mid, ymid_str);
+    lv_obj_align(yl_mid, LV_ALIGN_RIGHT_MID, -2, 0);
+
+    lv_obj_t *yl_min = lv_label_create(cell);
+    lv_obj_set_style_text_font(yl_min, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(yl_min, lv_color_hex(0x9E9E9E), 0);
+    lv_label_set_text(yl_min, ymin_str);
+    lv_obj_align(yl_min, LV_ALIGN_BOTTOM_RIGHT, -2, -2);
+
+    // X-axis time labels: "-5m" left, "now" right
+    lv_obj_t *xl_left = lv_label_create(cell);
+    lv_obj_set_style_text_font(xl_left, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(xl_left, lv_color_hex(0x9E9E9E), 0);
+    lv_label_set_text(xl_left, "-5m");
+    lv_obj_align(xl_left, LV_ALIGN_BOTTOM_LEFT, 2, -2);
+
+    lv_obj_t *xl_right = lv_label_create(cell);
+    lv_obj_set_style_text_font(xl_right, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(xl_right, lv_color_hex(0x9E9E9E), 0);
+    lv_label_set_text(xl_right, "now");
+    lv_obj_align(xl_right, LV_ALIGN_BOTTOM_RIGHT, -18, -2);
 
     g_series[i] = lv_chart_add_series(g_charts[i],
         lv_color_hex(i == 0 ? 0x2196F3 : i == 1 ? 0x9C27B0 : i == 2 ? 0x4CAF50 : 0xFF9800),
@@ -678,7 +730,6 @@ static void create_system_page() {
     for (int p = 0; p < CHART_POINTS; p++) {
       lv_chart_set_next_value(g_charts[i], g_series[i], 0);
     }
-    // Clear back to empty (the above filled with zeros; reset)
     lv_chart_set_point_count(g_charts[i], CHART_POINTS);
   }
 }
