@@ -5,12 +5,130 @@
 #include <windows.h>
 #include <iphlpapi.h>
 #include <pdh.h>
+#include <wbemidl.h>
+#include <comdef.h>
 #pragma comment(lib, "iphlpapi.lib")
 #pragma comment(lib, "pdh.lib")
+#pragma comment(lib, "wbemuuid.lib")
 #endif
 
 #include <chrono>
 #include <cstring>
+#include <cmath>
+
+#ifdef _WIN32
+// =============================================================================
+// CPU temp via WMI performance counter class (root\cimv2):
+// Win32_PerfRawData_Counters_ThermalZoneInformation — Temperature in Kelvin
+// =============================================================================
+static double read_cpu_temp_wmi() {
+    HRESULT hr;
+    IWbemLocator *loc = nullptr;
+    IWbemServices *svc = nullptr;
+    IEnumWbemClassObject *enu = nullptr;
+    double max_temp_c = 0.0;
+
+    hr = CoCreateInstance(CLSID_WbemLocator, 0, CLSCTX_INPROC_SERVER,
+                          IID_IWbemLocator, (LPVOID *)&loc);
+    if (FAILED(hr) || !loc) return 0.0;
+
+    // Try root\cimv2 performance thermal zone first (most reliable)
+    hr = loc->ConnectServer(_bstr_t(L"ROOT\\CIMV2"), nullptr, nullptr, 0, 0, 0, 0, &svc);
+    if (FAILED(hr) || !svc) { loc->Release(); return 0.0; }
+
+    CoSetProxyBlanket(svc, RPC_C_AUTHN_WINNT, RPC_C_AUTHZ_NONE, nullptr,
+                      RPC_C_AUTHN_LEVEL_CALL, RPC_C_IMP_LEVEL_IMPERSONATE, nullptr, EOAC_NONE);
+
+    hr = svc->ExecQuery(_bstr_t(L"WQL"),
+        _bstr_t(L"SELECT Temperature FROM Win32_PerfRawData_Counters_ThermalZoneInformation"),
+        WBEM_FLAG_FORWARD_ONLY | WBEM_FLAG_RETURN_IMMEDIATELY, nullptr, &enu);
+    if (SUCCEEDED(hr) && enu) {
+        while (enu) {
+            IWbemClassObject *obj = nullptr;
+            ULONG ret = 0;
+            if (enu->Next(5000, 1, &obj, &ret) != S_OK || ret == 0) break;
+            VARIANT vt;
+            VariantInit(&vt);
+            if (SUCCEEDED(obj->Get(L"Temperature", 0, &vt, nullptr, nullptr))) {
+                double kelvin = 0;
+                if (vt.vt == VT_I4 || vt.vt == VT_UI4) kelvin = (double)vt.lVal;
+                else if (vt.vt == VT_BSTR) kelvin = _wtof(vt.bstrVal);
+                if (kelvin > 0) {
+                    double celsius = kelvin - 273.15;
+                    if (celsius > max_temp_c) max_temp_c = celsius;
+                }
+            }
+            VariantClear(&vt);
+            obj->Release();
+        }
+        enu->Release();
+    }
+    svc->Release();
+
+    // Fallback: root\wmi MSAcpi_ThermalZoneTemperature (Kelvin*10)
+    if (max_temp_c <= 0.0) {
+        IWbemServices *svc2 = nullptr;
+        hr = loc->ConnectServer(_bstr_t(L"ROOT\\WMI"), nullptr, nullptr, 0, 0, 0, 0, &svc2);
+        if (SUCCEEDED(hr) && svc2) {
+            CoSetProxyBlanket(svc2, RPC_C_AUTHN_WINNT, RPC_C_AUTHZ_NONE, nullptr,
+                              RPC_C_AUTHN_LEVEL_CALL, RPC_C_IMP_LEVEL_IMPERSONATE, nullptr, EOAC_NONE);
+            IEnumWbemClassObject *enu2 = nullptr;
+            hr = svc2->ExecQuery(_bstr_t(L"WQL"),
+                _bstr_t(L"SELECT CurrentTemperature FROM MSAcpi_ThermalZoneTemperature"),
+                WBEM_FLAG_FORWARD_ONLY | WBEM_FLAG_RETURN_IMMEDIATELY, nullptr, &enu2);
+            if (SUCCEEDED(hr) && enu2) {
+                while (enu2) {
+                    IWbemClassObject *obj = nullptr;
+                    ULONG ret = 0;
+                    if (enu2->Next(5000, 1, &obj, &ret) != S_OK || ret == 0) break;
+                    VARIANT vt;
+                    VariantInit(&vt);
+                    if (SUCCEEDED(obj->Get(L"CurrentTemperature", 0, &vt, nullptr, nullptr))) {
+                        if (vt.vt == VT_I4 || vt.vt == VT_UI4) {
+                            double celsius = vt.lVal / 10.0 - 273.15;
+                            if (celsius > max_temp_c) max_temp_c = celsius;
+                        }
+                    }
+                    VariantClear(&vt);
+                    obj->Release();
+                }
+                enu2->Release();
+            }
+            svc2->Release();
+        }
+    }
+
+    loc->Release();
+    return max_temp_c;
+}
+
+// =============================================================================
+// GPU temp via NVML (nvml.dll, dynamic load — NVIDIA only)
+// =============================================================================
+typedef int (*nvmlInit_v2_t)();
+typedef int (*nvmlDeviceGetHandleByIndex_t)(unsigned int, void **);
+typedef int (*nvmlDeviceGetTemperature_t)(void *, unsigned int, unsigned int *);
+typedef const char *(*nvmlErrorString_t)(int);
+#define NVML_TEMP_GPU 0
+
+static double read_gpu_temp_nvml() {
+    HMODULE nvml = LoadLibraryA("nvml.dll");
+    if (!nvml) return 0.0;
+
+    auto nvmlInit = (nvmlInit_v2_t)GetProcAddress(nvml, "nvmlInit_v2");
+    auto getHandle = (nvmlDeviceGetHandleByIndex_t)GetProcAddress(nvml, "nvmlDeviceGetHandleByIndex_v2");
+    auto getTemp = (nvmlDeviceGetTemperature_t)GetProcAddress(nvml, "nvmlDeviceGetTemperature");
+    if (!nvmlInit || !getHandle || !getTemp) { FreeLibrary(nvml); return 0.0; }
+
+    if (nvmlInit() != 0) { FreeLibrary(nvml); return 0.0; }
+    void *handle = nullptr;
+    if (getHandle(0, &handle) != 0 || !handle) { FreeLibrary(nvml); return 0.0; }
+    unsigned int temp = 0;
+    if (getTemp(handle, NVML_TEMP_GPU, &temp) != 0) { FreeLibrary(nvml); return 0.0; }
+    FreeLibrary(nvml);
+    return (double)temp;
+}
+#endif // _WIN32
 
 SystemSource::SystemSource() {
     prev_net_time_ = std::chrono::steady_clock::now();
@@ -141,9 +259,9 @@ void SystemSource::sample_once() {
         }
     }
 
-    // ---- Temperatures: 0 for now (WMI/PDH TODO) ----
-    m.cpu_temp_x10 = 0;
-    m.gpu_temp_x10 = 0;
+    // ---- Temperatures ----
+    m.cpu_temp_x10 = static_cast<uint16_t>(read_cpu_temp_wmi() * 10.0);
+    m.gpu_temp_x10 = static_cast<uint16_t>(read_gpu_temp_nvml() * 10.0);
 
     {
         std::lock_guard<std::mutex> lock(mutex_);
