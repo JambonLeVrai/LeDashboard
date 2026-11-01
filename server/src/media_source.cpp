@@ -106,32 +106,32 @@ void MediaSource::poll_once() {
             new_info.state = MEDIA_STOPPED;
         }
 
-        // Position tracking: advance by wall-clock when playing,
-        // snap to SMTC on state change or track change
+        // Position tracking: if SMTC position changed (app updated it), snap to it.
+        // Otherwise, advance by wall-clock when playing.
         {
             std::lock_guard<std::mutex> lock(mutex_);
 
             bool state_changed = (new_info.state != tracked_state_);
             bool track_changed = (new_info.title != info_.title || new_info.artist != info_.artist);
             bool session_appeared = (new_info.valid && !info_.valid);
+            bool smtc_pos_updated = (smtc_pos != last_smtc_pos_);
 
             if (new_info.valid && new_info.state == MEDIA_PLAYING) {
-                if (state_changed || track_changed || session_appeared) {
-                    // Snap to SMTC position on change
+                if (state_changed || track_changed || session_appeared || smtc_pos_updated) {
+                    // Snap to SMTC position whenever the app reports a new one
                     tracked_position_ms_ = smtc_pos;
                 } else {
-                    // Advance by wall-clock
+                    // SMTC position hasn't changed — advance by wall-clock
                     tracked_position_ms_ += static_cast<uint32_t>(elapsed_ms);
                 }
-                // Clamp to duration
                 if (smtc_dur > 0 && tracked_position_ms_ > smtc_dur) {
                     tracked_position_ms_ = smtc_dur;
                 }
             } else {
-                // Paused or stopped: use SMTC position directly
                 tracked_position_ms_ = smtc_pos;
             }
 
+            last_smtc_pos_ = smtc_pos;
             tracked_state_ = new_info.state;
             new_info.position_ms = tracked_position_ms_;
 

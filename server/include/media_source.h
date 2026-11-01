@@ -61,6 +61,7 @@ private:
     // Position tracking
     uint32_t tracked_position_ms_ = 0;
     uint8_t  tracked_state_ = MEDIA_STOPPED;
+    uint32_t last_smtc_pos_ = 0;  // last raw SMTC position — detect when app updates it
     std::chrono::steady_clock::time_point last_poll_time_;
 
     // Pimpl to hide WinRT types
