@@ -674,12 +674,20 @@ static lv_obj_t *create_metric_card(lv_obj_t *parent, int col, int row, int idx)
   return card;
 }
 
-// Create page 2: system monitor with numeric metric grid (2 cols x 5 rows)
+// Create page 2: system monitor with numeric metric grid (2 cols x 4 rows)
 static void create_system_page() {
   g_page2 = lv_obj_create(nullptr);
-  lv_obj_set_style_bg_color(g_page2, lv_color_hex(0xF0F0F0), 0);
   lv_obj_set_style_bg_opa(g_page2, LV_OPA_COVER, 0);
   lv_obj_clear_flag(g_page2, LV_OBJ_FLAG_SCROLLABLE);
+
+  // Background image (same as page 1)
+  lv_obj_t *bg = lv_image_create(g_page2);
+  lv_image_set_src(bg, &background);
+  lv_obj_set_pos(bg, 0, 0);
+
+  // Semi-transparent white panel over the background (like page 1)
+  create_panel(g_page2, 0, 0, 480, 480);
+
   lv_obj_set_style_pad_all(g_page2, 8, 0);
   lv_obj_set_style_pad_gap(g_page2, 6, 0);
   lv_obj_set_flex_flow(g_page2, LV_FLEX_FLOW_COLUMN);
@@ -888,7 +896,7 @@ void create_media_player(lv_obj_t *page, int page_idx) {
   // Position: x=0, y=480-50=430
   lv_obj_t *media_bar = lv_obj_create(page);
   lv_obj_set_size(media_bar, 480, 32);
-  lv_obj_set_pos(media_bar, 0, 454);
+  lv_obj_set_pos(media_bar, 0, 448);  // flush with bottom: 448+32 = 480
   lv_obj_set_style_bg_color(media_bar, lv_color_hex(0xFFFFFF), 0); // White
   lv_obj_set_style_bg_opa(media_bar, LV_OPA_50, 0); // 50% transparent (lighter than main panel)
   lv_obj_set_style_border_width(media_bar, 0, 0);
