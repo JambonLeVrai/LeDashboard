@@ -160,6 +160,12 @@ typedef struct {
 #define MEDIA_STOPPED 0
 #define MEDIA_PAUSED  1
 #define MEDIA_PLAYING 2
+
+// Discovery (auto-detect peripheral)
+#define MSG_DISCOVER     0x80
+#define MSG_DISCOVER_ACK 0x81
+extern const char DISCOVER_MAGIC[];
+extern const char DISCOVER_ACK_PAYLOAD[];
 #pragma pack(pop)
 
 // (Old complex weather structs removed — replaced by compact WeatherMessageBinary above)

@@ -152,6 +152,18 @@ constexpr uint8_t MEDIA_STOPPED = 0;
 constexpr uint8_t MEDIA_PAUSED  = 1;
 constexpr uint8_t MEDIA_PLAYING = 2;
 
+// =============================================================================
+// Discovery (auto-detect peripheral on any COM port)
+// =============================================================================
+
+constexpr uint8_t MSG_DISCOVER     = 0x80;  // host → device: probe
+constexpr uint8_t MSG_DISCOVER_ACK = 0x81;  // device → host: identification
+
+// DISCOVER payload: magic probe string
+extern const char DISCOVER_MAGIC[];       // "LEDASHBOARD_PROBE"
+// DISCOVER_ACK payload: device ID string
+extern const char DISCOVER_ACK_PAYLOAD[]; // "LEDASHBOARD_ESP32_V1"
+
 struct AckMessage {
     uint8_t acked_type;
     uint8_t sequence;

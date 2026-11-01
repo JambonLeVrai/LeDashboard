@@ -2,6 +2,10 @@
 #include "data/weather_data.h"
 #include <string.h>
 
+// Discovery magic strings
+const char DISCOVER_MAGIC[]       = "LEDASHBOARD_PROBE";
+const char DISCOVER_ACK_PAYLOAD[] = "LEDASHBOARD_ESP32_V1";
+
 // French day names
 const char* DAY_NAMES_FR[7] = {
     "Lundi",

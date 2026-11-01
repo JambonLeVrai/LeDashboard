@@ -1,6 +1,10 @@
 #include "protocol.h"
 #include <cstring>
 
+// Discovery magic strings
+const char DISCOVER_MAGIC[]       = "LEDASHBOARD_PROBE";
+const char DISCOVER_ACK_PAYLOAD[] = "LEDASHBOARD_ESP32_V1";
+
 // =============================================================================
 // CRC-16/CCITT (poly 0x1021, init 0x0000, no final XOR, no bit reversal)
 // =============================================================================

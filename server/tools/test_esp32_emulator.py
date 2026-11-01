@@ -61,7 +61,13 @@ TYPE_NAMES = {
     0x04: "NOTIFICATION", 0x05: "PORTFOLIO", 0x06: "SYSTEM", 0x07: "CALENDAR",
     0x08: "ACK", 0x09: "NACK", 0x0A: "ERROR", 0x0B: "CONFIG", 0x0C: "REQUEST",
     0x0D: "TOUCH", 0x0E: "COMMAND", 0x0F: "DEBUG",
+    0x80: "DISCOVER", 0x81: "DISCOVER_ACK",
 }
+
+DISCOVER = 0x80
+DISCOVER_ACK = 0x81
+DISCOVER_MAGIC = b"LEDASHBOARD_PROBE"
+DISCOVER_ACK_PAYLOAD = b"LEDASHBOARD_ESP32_V1"
 
 ERROR_NAMES = {
     0x00: "SUCCESS", 0x01: "INVALID_FORMAT", 0x02: "CRC_ERROR", 0x03: "TIMEOUT",
@@ -333,6 +339,10 @@ class Esp32Emulator:
                          f"{day_name} {t['day']} {month_name} {t['year']} "
                          f"(utc={utc_dt.strftime('%H:%M:%S')} ts_ms={ts_ms})")
             self.send_ack(TIME)
+
+        elif msg_type == DISCOVER:
+            # Respond with device identification for auto-discovery
+            self.send(DISCOVER_ACK, DISCOVER_ACK_PAYLOAD)
 
         else:
             # ACK any other valid frame

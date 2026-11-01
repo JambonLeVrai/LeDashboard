@@ -124,6 +124,15 @@ void SerialHandler::handle_frame(uint8_t type, const uint8_t *payload, unsigned 
             break;
         }
 
+        case MSG_DISCOVER: {
+            // Respond with device identification so the server can auto-discover us
+            send_frame(MSG_DISCOVER_ACK,
+                       reinterpret_cast<const uint8_t *>(DISCOVER_ACK_PAYLOAD),
+                       strlen(DISCOVER_ACK_PAYLOAD));
+            Serial.printf("[SERIAL] DISCOVER probe received -> sent DISCOVER_ACK\n");
+            break;
+        }
+
         default:
             // ACK any other valid frame for now
             Serial.printf("[SERIAL] Frame type=0x%02X len=%u (unhandled, ACK)\n", type, len);

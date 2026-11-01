@@ -17,6 +17,7 @@
 #include <lz4.h>
 
 #include "server.h"
+#include "discover.h"
 
 #include <fstream>
 #include <iostream>
@@ -32,11 +33,11 @@ static void signal_handler(int) {
 }
 
 struct Config {
-    std::string port = "COM3";
+    std::string port = "auto";  // "auto" = scan all COM ports for the peripheral
     uint32_t baud_rate = 115200;
     uint32_t update_interval_ms = 100;
     std::string log_level = "info";
-    std::string weather_location = "Paris";  // city name or "lat,lon"
+    std::string weather_location = "Paris";
 };
 
 static Config load_config(int argc, char *argv[]) {
@@ -101,8 +102,8 @@ static Config load_config(int argc, char *argv[]) {
                 }
             }
         } else if (arg == "--help" || arg == "-h") {
-            std::cout << "Usage: ledashboard_server [--port COMx] [--baud N] [--city \"City Name\"] [--log-level LEVEL] [--config file.json]\n";
-            std::cout << "  Default: port=COM3, baud=115200, city=Paris, log-level=info\n";
+            std::cout << "Usage: ledashboard_server [--port COMx|auto] [--baud N] [--city \"City Name\"] [--log-level LEVEL] [--config file.json]\n";
+            std::cout << "  Default: port=auto (scan all COM ports), baud=115200, city=Paris, log-level=info\n";
             std::cout << "  Log levels: trace, debug, info, warn, error, off\n";
             std::cout << "  Example: --log-level debug   (shows every MEDIA/TIME/WEATHER frame)\n";
             std::cout << "  Weather: Open-Meteo (no API key needed)\n";
@@ -123,24 +124,39 @@ int main(int argc, char *argv[]) {
 
     spdlog::info("LeDashboard server v1.0.0 starting");
     spdlog::info("LZ4 runtime version: {}", LZ4_versionString());
+
+    // Auto-discover the peripheral if no explicit port given
+    std::string port = cfg.port;
+    if (port == "auto" || port.empty()) {
+        spdlog::info("Auto-discovery: scanning COM ports for LeDashboard peripheral...");
+        port = discover_peripheral(cfg.baud_rate, 500);
+        if (port.empty()) {
+            spdlog::error("No peripheral found. Specify a port with --port COMx");
+            std::cerr << "No LeDashboard peripheral found on any COM port." << std::endl;
+            std::cerr << "Available ports: ";
+            for (auto &p : list_com_ports()) std::cerr << p << " ";
+            std::cerr << std::endl;
+            return 1;
+        }
+    }
+
     spdlog::info("Config: port={} baud={} interval={}ms log_level={} city={}",
-                 cfg.port, cfg.baud_rate, cfg.update_interval_ms, cfg.log_level, cfg.weather_location);
+                 port, cfg.baud_rate, cfg.update_interval_ms, cfg.log_level, cfg.weather_location);
 
     std::signal(SIGINT, signal_handler);
     std::signal(SIGTERM, signal_handler);
 
     DashboardServer server;
-    if (!server.initialize(cfg.port, cfg.baud_rate, cfg.weather_location)) {
-        spdlog::error("Failed to initialize server on {}", cfg.port);
-        std::cerr << "Failed to open serial port " << cfg.port << std::endl;
-        std::cerr << "Available ports can be listed with: powershell \"[System.IO.Ports.SerialPort]::GetPortNames()\"" << std::endl;
+    if (!server.initialize(port, cfg.baud_rate, cfg.weather_location)) {
+        spdlog::error("Failed to initialize server on {}", port);
+        std::cerr << "Failed to open serial port " << port << std::endl;
         return 1;
     }
 
     // Run server in a thread so we can handle Ctrl+C
     std::thread server_thread([&server]() { server.run(); });
 
-    spdlog::info("Server running on {}. Press Ctrl+C to stop.", cfg.port);
+    spdlog::info("Server running on {}. Press Ctrl+C to stop.", port);
 
     while (!g_interrupted) {
         std::this_thread::sleep_for(std::chrono::milliseconds(200));
