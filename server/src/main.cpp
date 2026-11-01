@@ -121,6 +121,7 @@ int main(int argc, char *argv[]) {
 
     Config cfg = load_config(argc, argv);
     console->set_level(spdlog::level::from_str(cfg.log_level));
+    spdlog::set_level(spdlog::level::from_str(cfg.log_level)); // also set default logger (used by spdlog::debug etc.)
 
     spdlog::info("LeDashboard server v1.0.0 starting");
     spdlog::info("LZ4 runtime version: {}", LZ4_versionString());
