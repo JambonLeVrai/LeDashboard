@@ -343,7 +343,7 @@ class Esp32Emulator:
         self.send_nack(msg_type, 0x02)
 
     def run(self, duration: float | None = None):
-        self.ser = serial.Serial(self.port, self.baud, timeout=0.1)
+        self.ser = serial.Serial(self.port, self.baud, timeout=0.01)  # 10ms poll
         self.running = True
         self.last_hb_sent = time.monotonic()
         self.last_hb_received = time.monotonic()

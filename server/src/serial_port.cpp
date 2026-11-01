@@ -31,7 +31,8 @@ bool SerialPort::open(const std::string &port_name, uint32_t baud_rate) {
                            GENERIC_READ | GENERIC_WRITE,
                            0, nullptr,
                            OPEN_EXISTING,
-                           FILE_ATTRIBUTE_NORMAL, nullptr);
+                           FILE_FLAG_OVERLAPPED,  // async I/O — WriteFile never blocks
+                           nullptr);
 
     if (handle_ == INVALID_HANDLE_VALUE) {
         spdlog::error("SerialPort: failed to open {} (error {})", device, GetLastError());
@@ -77,8 +78,9 @@ bool SerialPort::open(const std::string &port_name, uint32_t baud_rate) {
         return false;
     }
 
-    // Set buffer sizes
-    SetupComm(handle_, 8192, 8192);
+    // Large buffers: at 115200 baud (~11.5KB/s) 256KB takes ~22s to drain,
+    // so WriteFile never blocks at our ~200 B/s rate
+    SetupComm(handle_, 262144, 262144);
 
     is_open_ = true;
     stop_requested_ = false;
@@ -126,7 +128,10 @@ bool SerialPort::write(const uint8_t *data, size_t len) {
 }
 
 void SerialPort::write_thread_fn() {
-    while (!stop_requested_ || !is_open_) {
+    // Overlapped write: each frame gets its own event; WriteFile returns
+    // immediately with ERROR_IO_PENDING, and we wait for completion with a
+    // timeout so we can also pick up new queue items.
+    while (!stop_requested_) {
         std::vector<uint8_t> frame;
         {
             std::unique_lock<std::mutex> lock(write_mutex_);
@@ -139,11 +144,18 @@ void SerialPort::write_thread_fn() {
             write_queue_.pop();
         }
 
-        if (handle_ != INVALID_HANDLE_VALUE && !frame.empty()) {
-            DWORD written = 0;
-            // Blocking write is OK here — only this thread does WriteFile
-            WriteFile(handle_, frame.data(), static_cast<DWORD>(frame.size()), &written, nullptr);
+        if (handle_ == INVALID_HANDLE_VALUE || frame.empty()) continue;
+
+        OVERLAPPED ov = {};
+        ov.hEvent = CreateEventA(nullptr, TRUE, FALSE, nullptr);
+        DWORD written = 0;
+        BOOL ok = WriteFile(handle_, frame.data(), static_cast<DWORD>(frame.size()), &written, &ov);
+        if (!ok && GetLastError() == ERROR_IO_PENDING) {
+            // Write in progress — wait for completion or timeout
+            WaitForSingleObject(ov.hEvent, 500);
+            GetOverlappedResult(handle_, &ov, &written, FALSE);
         }
+        CloseHandle(ov.hEvent);
     }
 }
 
@@ -154,18 +166,18 @@ void SerialPort::set_data_callback(DataCallback cb) {
 
 void SerialPort::read_thread_fn() {
     uint8_t buf[1024];
-    while (!stop_requested_ && is_open_) {
+    OVERLAPPED ov = {};
+    ov.hEvent = CreateEventA(nullptr, TRUE, FALSE, nullptr);
+
+    while (!stop_requested_) {
         DWORD bytes_read = 0;
-        BOOL ok = ReadFile(handle_, buf, sizeof(buf), &bytes_read, nullptr);
-        if (!ok) {
-            DWORD err = GetLastError();
-            if (err == ERROR_IO_PENDING) {
-                // Overlapped not used; should not happen with our settings
-                continue;
-            }
-            if (stop_requested_) break;
-            spdlog::warn("SerialPort: ReadFile error {} on {}", err, port_name_);
-            break;
+        ResetEvent(ov.hEvent);
+        BOOL ok = ReadFile(handle_, buf, sizeof(buf), &bytes_read, &ov);
+        if (!ok && GetLastError() == ERROR_IO_PENDING) {
+            // Wait for data with 100ms timeout so we can check stop_requested_
+            DWORD wait = WaitForSingleObject(ov.hEvent, 100);
+            if (wait == WAIT_TIMEOUT) continue;
+            GetOverlappedResult(handle_, &ov, &bytes_read, FALSE);
         }
         if (bytes_read > 0) {
             std::lock_guard<std::mutex> lock(callback_mutex_);
@@ -174,6 +186,7 @@ void SerialPort::read_thread_fn() {
             }
         }
     }
+    CloseHandle(ov.hEvent);
 }
 
 #else
