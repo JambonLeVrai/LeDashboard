@@ -8,6 +8,20 @@ Last verified: 2026-11-01
 
 ---
 
+## Project status (v1.3.0, working)
+
+| Feature | Status | Details |
+|---------|--------|---------|
+| Heartbeat | Working | 5s interval, connection state tracking |
+| Time sync | Working | ms-precision via `timestamp_ms`, instant on start/connect |
+| Weather | Working | Open-Meteo (no key), hourly, current+tomorrow+AQI |
+| Media | Working | Windows SMTC, title/artist/timer/state, 1s refresh |
+| System monitor | Protocol done, firmware UI done (dummy values) | SYSTEM message every 5s (CPU/RAM/NET); GPU via PDH TODO |
+| Auto-discovery | Working | `--port auto` scans COM ports with DISCOVER probe |
+| Pages | Working | Page 1 = time+weather+media, Page 2 = system charts; double-tap to switch |
+
+---
+
 ## 1. Toolchain
 
 | Tool | Version | Location / notes |

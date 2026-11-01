@@ -105,6 +105,8 @@ void on_server_time(const TimeMessageBinary *t);
 void on_server_weather(const WeatherMessageBinary *w);
 void on_server_media(const MediaMessageBinary *hdr, const char *title, const char *artist);
 void on_conn_state(connection_state_t s);
+static void on_tap_detected();
+static lv_obj_t *g_page1;
 
 // Display flushing callback for LVGL
 void my_disp_flush(lv_display_t *disp, const lv_area_t *area, uint8_t *px_map)
@@ -122,6 +124,7 @@ void my_disp_flush(lv_display_t *disp, const lv_area_t *area, uint8_t *px_map)
 }
 
 // Touchpad input callback for LVGL
+static bool g_prev_touch = false;
 void my_touchpad_read(lv_indev_t *indev, lv_indev_data_t *data)
 {
   if (touch_has_signal())
@@ -131,15 +134,22 @@ void my_touchpad_read(lv_indev_t *indev, lv_indev_data_t *data)
       data->state = LV_INDEV_STATE_PRESSED;
       data->point.x = touch_last_x;
       data->point.y = touch_last_y;
+      g_prev_touch = true;
     }
     else if (touch_released())
     {
       data->state = LV_INDEV_STATE_RELEASED;
+      // Tap detected on release — check for double-tap
+      if (g_prev_touch) {
+        g_prev_touch = false;
+        on_tap_detected();
+      }
     }
   }
   else
   {
     data->state = LV_INDEV_STATE_RELEASED;
+    g_prev_touch = false;
   }
 }
 
@@ -396,7 +406,10 @@ static void make_fixed(lv_obj_t *obj) {
 
 // Create the Time+Weather page with fixed positions and larger fonts
 void create_time_weather_page() {
-  lv_obj_t *page = lv_screen_active();
+  g_page1 = lv_obj_create(nullptr);  // new screen
+  lv_obj_set_style_bg_opa(g_page1, LV_OPA_COVER, 0);
+  lv_obj_clear_flag(g_page1, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_t *page = g_page1;
   
   // Set background image (full screen)
   lv_obj_t *bg_img = lv_image_create(page);
@@ -510,6 +523,167 @@ lv_obj_t *g_title_label = nullptr;
 int32_t g_title_scroll_dist = 0;
 #define TITLE_SCROLL_SPEED_PX_S  60
 #define TITLE_PAUSE_MS           2000
+
+// =============================================================================
+// Page management (double-tap to switch)
+// =============================================================================
+
+static lv_obj_t *g_page2 = nullptr;   // system monitor page
+static int g_current_page = 0;
+
+// Double-tap detection
+static uint32_t g_last_tap_ms = 0;
+static bool g_tap_pending = false;
+#define DOUBLE_TAP_WINDOW_MS 350
+
+static void switch_page();
+static void on_tap_detected() {
+  uint32_t now = millis();
+  if (g_tap_pending && (now - g_last_tap_ms) <= DOUBLE_TAP_WINDOW_MS) {
+    g_tap_pending = false;
+    switch_page();
+  } else {
+    g_tap_pending = true;
+    g_last_tap_ms = now;
+  }
+}
+
+static void switch_page() {
+  g_current_page = 1 - g_current_page;
+  lv_obj_t *show = g_current_page == 0 ? g_page1 : g_page2;
+  lv_screen_load(show);
+  Serial.printf("[UI] Switched to page %d\n", g_current_page + 1);
+}
+
+// =============================================================================
+// Page 2: System monitor (CPU, GPU, RAM, NET charts)
+// =============================================================================
+
+#define CHART_POINTS 60   // history points per chart
+#define CHART_UPDATE_MS 5000
+
+static lv_obj_t *g_sys_time_label = nullptr;
+static lv_obj_t *g_charts[4] = {nullptr, nullptr, nullptr, nullptr};  // CPU, GPU, RAM, NET
+static lv_chart_series_t *g_series[4] = {nullptr, nullptr, nullptr, nullptr};
+static int16_t g_chart_data[4][CHART_POINTS];
+static int g_chart_idx = 0;
+static const char *g_chart_names[4] = {"CPU %", "GPU %", "RAM MB", "NET KB/s"};
+
+// Dummy value state (random walk)
+static float g_dummy_vals[4] = {30.0f, 10.0f, 20000.0f, 500.0f};
+static float g_dummy_targets[4] = {30.0f, 10.0f, 20000.0f, 500.0f};
+
+static void update_dummy_system() {
+  static uint32_t last = 0;
+  uint32_t now = millis();
+  if (now - last < CHART_UPDATE_MS) return;
+  last = now;
+
+  // Random walk toward new random targets
+  for (int i = 0; i < 4; i++) {
+    if (random(100) < 20) {
+      float range = (i < 2) ? 100.0f : (i == 2 ? 48000.0f : 5000.0f);
+      g_dummy_targets[i] = random(0, (long)range);
+    }
+    g_dummy_vals[i] += (g_dummy_targets[i] - g_dummy_vals[i]) * 0.3f;
+  }
+
+  // Push new point to each chart (shift mode auto-shifts old points)
+  for (int c = 0; c < 4; c++) {
+    float v = g_dummy_vals[c];
+    int32_t scaled;
+    if (c < 2) scaled = (int32_t)v;            // CPU/GPU: 0-100
+    else if (c == 2) scaled = (int32_t)(v / 100); // RAM: /100 for chart range
+    else scaled = (int32_t)(v / 10);           // NET: /10
+
+    if (g_charts[c] && g_series[c]) {
+      lv_chart_set_next_value(g_charts[c], g_series[c], scaled);
+    }
+  }
+
+  // Update time label on page 2
+  if (g_sys_time_label) {
+    char buf[10];
+    snprintf(buf, sizeof(buf), "%02d:%02d", current_time.hour, current_time.minute);
+    lv_label_set_text(g_sys_time_label, buf);
+  }
+}
+
+// Create page 2: system monitor with 4 charts in 2x2 grid
+static void create_system_page() {
+  g_page2 = lv_obj_create(nullptr);  // new screen
+  lv_obj_set_style_bg_color(g_page2, lv_color_hex(0xF5F5F5), 0);
+  lv_obj_set_style_bg_opa(g_page2, LV_OPA_COVER, 0);
+  lv_obj_clear_flag(g_page2, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_set_style_pad_all(g_page2, 8, 0);
+  lv_obj_set_style_pad_gap(g_page2, 8, 0);
+  lv_obj_set_flex_flow(g_page2, LV_FLEX_FLOW_COLUMN);
+  lv_obj_set_flex_align(g_page2, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+
+  // Time at top (smaller font than page 1)
+  g_sys_time_label = lv_label_create(g_page2);
+  lv_obj_set_style_text_font(g_sys_time_label, &lv_font_montserrat_28, 0);
+  lv_obj_set_style_text_color(g_sys_time_label, lv_color_hex(0x212121), 0);
+  lv_label_set_text(g_sys_time_label, "--:--");
+
+  // 2x2 grid container for charts
+  lv_obj_t *grid = lv_obj_create(g_page2);
+  lv_obj_set_size(grid, 464, 400);
+  lv_obj_set_style_bg_opa(grid, LV_OPA_TRANSP, 0);
+  lv_obj_set_style_border_width(grid, 0, 0);
+  lv_obj_set_style_pad_all(grid, 0, 0);
+  lv_obj_set_style_pad_gap(grid, 8, 0);
+  lv_obj_clear_flag(grid, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_set_layout(grid, LV_LAYOUT_GRID);
+
+  // Grid: 2 columns x 2 rows
+  static int32_t col_dsc[] = {232, 232, LV_GRID_TEMPLATE_LAST};
+  static int32_t row_dsc[] = {196, 196, LV_GRID_TEMPLATE_LAST};
+  lv_obj_set_style_grid_column_dsc_array(grid, col_dsc, 0);
+  lv_obj_set_style_grid_row_dsc_array(grid, row_dsc, 0);
+
+  for (int i = 0; i < 4; i++) {
+    lv_obj_t *cell = lv_obj_create(grid);
+    lv_obj_set_style_bg_color(cell, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_set_style_bg_opa(cell, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(cell, 8, 0);
+    lv_obj_set_style_border_width(cell, 0, 0);
+    lv_obj_set_style_pad_all(cell, 4, 0);
+    lv_obj_clear_flag(cell, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_grid_cell(cell, LV_GRID_ALIGN_STRETCH, i % 2, 1,
+                         LV_GRID_ALIGN_STRETCH, i / 2, 1);
+
+    // Chart name label
+    lv_obj_t *name = lv_label_create(cell);
+    lv_obj_set_style_text_font(name, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(name, lv_color_hex(0x616161), 0);
+    lv_label_set_text(name, g_chart_names[i]);
+    lv_obj_align(name, LV_ALIGN_TOP_LEFT, 0, 0);
+
+    // Chart
+    g_charts[i] = lv_chart_create(cell);
+    lv_obj_set_size(g_charts[i], 220, 160);
+    lv_obj_align(g_charts[i], LV_ALIGN_BOTTOM_MID, 0, 0);
+    lv_chart_set_type(g_charts[i], LV_CHART_TYPE_LINE);
+    lv_chart_set_point_count(g_charts[i], CHART_POINTS);
+    lv_chart_set_range(g_charts[i], LV_CHART_AXIS_PRIMARY_Y, 0, i < 2 ? 100 : (i == 2 ? 500 : 500));
+    lv_chart_set_div_line_count(g_charts[i], 4, 4);
+    lv_chart_set_update_mode(g_charts[i], LV_CHART_UPDATE_MODE_SHIFT);
+
+    g_series[i] = lv_chart_add_series(g_charts[i],
+        lv_color_hex(i == 0 ? 0x2196F3 : i == 1 ? 0x9C27B0 : i == 2 ? 0x4CAF50 : 0xFF9800),
+        LV_CHART_AXIS_PRIMARY_Y);
+
+    // Init with zeros
+    for (int p = 0; p < CHART_POINTS; p++) {
+      lv_chart_set_next_value(g_charts[i], g_series[i], 0);
+    }
+    // Clear back to empty (the above filled with zeros; reset)
+    lv_chart_set_point_count(g_charts[i], CHART_POINTS);
+  }
+}
+
+// =============================================================================
 
 // Globals for media player state (server-driven)
 lv_obj_t *g_timer_label = nullptr;
@@ -674,7 +848,7 @@ void update_media() {
 
 // Create the media player bar at the bottom of the screen
 void create_media_player() {
-  lv_obj_t *page = lv_screen_active();
+  lv_obj_t *page = g_page1;  // media bar belongs to page 1
   
   // Media player container - hard rectangle 480x50 at bottom, non-scrollable, full width
   // Position: x=0, y=480-50=430
@@ -851,12 +1025,17 @@ void setup()
   g_title_font = lv_font_montserrat_18;
   g_title_font.fallback = &song_title_fallback_18;
   
-  // Build GUI - Time+Weather page with fixed positions
+  // Build GUI - Page 1 (time+weather) and Page 2 (system monitor)
   create_time_weather_page();
   create_media_player();
+  create_system_page();
 
-  // Lock everything: disable scrolling on the screen and all children
-  make_fixed(lv_screen_active());
+  // Load page 1 as the active screen
+  lv_screen_load(g_page1);
+
+  // Lock everything: disable scrolling on all screens and children
+  make_fixed(g_page1);
+  make_fixed(g_page2);
 
   Serial.println("Time+Weather page created. Ready!");
 }
@@ -871,6 +1050,9 @@ void loop()
   
   // Update media progress
   update_media();
+
+  // Update page 2 dummy system charts
+  update_dummy_system();
   
   // Let LVGL handle GUI tasks
   lv_timer_handler();

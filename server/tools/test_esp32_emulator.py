@@ -292,6 +292,16 @@ class Esp32Emulator:
             pos_str = f"{pos_ms//60000}:{pos_ms//1000%60:02d}"
             dur_str = f"{dur_ms//60000}:{dur_ms//1000%60:02d}" if dur_ms else "-:--"
             return f"state={state_name} {pos_str}/{dur_str} \"{title}\" — \"{artist}\""
+        if msg_type == SYSTEM and len(payload) >= 22:
+            ts_ms = int.from_bytes(payload[0:8], "little")
+            cpu = int.from_bytes(payload[8:10], "little") / 10.0
+            gpu = int.from_bytes(payload[10:12], "little") / 10.0
+            ram_used = int.from_bytes(payload[12:14], "little")
+            ram_total = int.from_bytes(payload[14:16], "little")
+            net_up = int.from_bytes(payload[16:20], "little")
+            net_down = int.from_bytes(payload[20:24], "little")
+            return (f"CPU={cpu:.1f}% GPU={gpu:.1f}% RAM={ram_used}/{ram_total}MB "
+                    f"NET={net_down}/{net_up}KB/s down/up")
         if msg_type == HEARTBEAT and len(payload) >= 3:
             return f"seq={payload[0]} proto={payload[1]}.{payload[2]}"
         if msg_type == ACK and len(payload) >= 1:

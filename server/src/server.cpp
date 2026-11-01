@@ -14,6 +14,7 @@ DashboardServer::~DashboardServer() {
     stop();
     weather_.stop();
     media_.stop();
+    system_.stop();
     serial_.close();
 }
 
@@ -40,9 +41,13 @@ bool DashboardServer::initialize(const std::string &port_name, uint32_t baud_rat
     last_hb_received_   = now;
     last_time_sent_     = now - TIME_INTERVAL;
     last_media_sent_    = now - MEDIA_INTERVAL;
+    last_system_sent_   = now - SYSTEM_INTERVAL;
 
     // Start media polling thread (runs independently, doesn't block main loop)
     media_.start();
+
+    // Start system monitor thread (samples every 5s)
+    system_.start();
 
     spdlog::info("DashboardServer initialized on {} @ {} (weather: {})", port_name, baud_rate, weather_location);
     return true;
@@ -79,6 +84,12 @@ void DashboardServer::run() {
         if (now - last_media_sent_ >= MEDIA_INTERVAL) {
             send_media();
             last_media_sent_ = now;
+        }
+
+        // System: send every 5s
+        if (now - last_system_sent_ >= SYSTEM_INTERVAL) {
+            send_system();
+            last_system_sent_ = now;
         }
 
         // Weather: send when new data arrives from the background thread
@@ -200,6 +211,14 @@ void DashboardServer::send_media() {
     } else {
         spdlog::debug("-> MEDIA [STOP] no active session");
     }
+}
+
+void DashboardServer::send_system() {
+    auto s = system_.snapshot();
+    send_frame(MsgType::SYSTEM, reinterpret_cast<const uint8_t *>(&s), sizeof(s));
+    spdlog::debug("-> SYSTEM CPU={:.1f}% GPU={:.1f}% RAM={}/{}MB NET={}/{}KB/s",
+                  s.cpu_x10 / 10.0, s.gpu_x10 / 10.0,
+                  s.ram_used_mb, s.ram_total_mb, s.net_down_kbps, s.net_up_kbps);
 }
 
 void DashboardServer::send_ack(MsgType acked_type) {

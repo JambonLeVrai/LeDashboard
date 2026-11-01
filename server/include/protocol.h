@@ -164,6 +164,22 @@ extern const char DISCOVER_MAGIC[];       // "LEDASHBOARD_PROBE"
 // DISCOVER_ACK payload: device ID string
 extern const char DISCOVER_ACK_PAYLOAD[]; // "LEDASHBOARD_ESP32_V1"
 
+// =============================================================================
+// SYSTEM message — resource usage snapshot (sent every 5s)
+// =============================================================================
+
+#pragma pack(push, 1)
+struct SystemMessageBinary {
+    uint64_t timestamp_ms;   // 8 — server UTC ms
+    uint16_t cpu_x10;        // 2 — CPU usage % * 10 (0-1000 = 0-100.0%)
+    uint16_t gpu_x10;        // 2 — GPU usage % * 10
+    uint16_t ram_used_mb;    // 2 — RAM used in MB
+    uint16_t ram_total_mb;   // 2 — RAM total in MB
+    uint32_t net_up_kbps;    // 4 — upload KB/s
+    uint32_t net_down_kbps;  // 4 — download KB/s
+};  // total: 22 bytes
+#pragma pack(pop)
+
 struct AckMessage {
     uint8_t acked_type;
     uint8_t sequence;

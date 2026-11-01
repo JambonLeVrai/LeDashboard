@@ -4,6 +4,7 @@
 #include "protocol.h"
 #include "weather_source.h"
 #include "media_source.h"
+#include "system_source.h"
 
 #include <string>
 #include <atomic>
@@ -49,6 +50,7 @@ private:
     void send_time();
     void send_weather();
     void send_media();
+    void send_system();
     void send_ack(MsgType acked_type);
     void send_nack(MsgType nacked_type, uint8_t error_code);
 
@@ -73,6 +75,7 @@ private:
     FrameDecoder decoder_;
     WeatherSource weather_;
     MediaSource media_;
+    SystemSource system_;
 
     std::atomic<bool> running_{false};
     std::atomic<bool> connected_{false};
@@ -82,10 +85,12 @@ private:
     std::chrono::steady_clock::time_point last_hb_received_;
     std::chrono::steady_clock::time_point last_time_sent_;
     std::chrono::steady_clock::time_point last_media_sent_;
+    std::chrono::steady_clock::time_point last_system_sent_;
 
     static constexpr auto HB_INTERVAL      = std::chrono::seconds(5);
     static constexpr auto TIME_INTERVAL    = std::chrono::seconds(1);
-    static constexpr auto MEDIA_INTERVAL   = std::chrono::seconds(1);  // timer tick
+    static constexpr auto MEDIA_INTERVAL   = std::chrono::seconds(1);
+    static constexpr auto SYSTEM_INTERVAL  = std::chrono::seconds(5);  // timer tick
     static constexpr auto HB_TIMEOUT       = std::chrono::seconds(15);
     // Weather: send only after a refetch (or once on connect), not on a timer
     std::atomic<bool> weather_dirty_{true};  // true = send WEATHER on next loop
