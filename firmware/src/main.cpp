@@ -679,29 +679,28 @@ static void create_system_page() {
   g_page2 = lv_obj_create(nullptr);
   lv_obj_set_style_bg_opa(g_page2, LV_OPA_COVER, 0);
   lv_obj_clear_flag(g_page2, LV_OBJ_FLAG_SCROLLABLE);
+  // No flex layout on the page itself — absolute positioning like page 1
 
-  // Background image (same as page 1)
+  // Background image (same as page 1) — at the very back
   lv_obj_t *bg = lv_image_create(g_page2);
   lv_image_set_src(bg, &background);
   lv_obj_set_pos(bg, 0, 0);
+  lv_obj_set_size(bg, 480, 480);
 
   // Semi-transparent white panel over the background (like page 1)
   create_panel(g_page2, 0, 0, 480, 480);
 
-  lv_obj_set_style_pad_all(g_page2, 8, 0);
-  lv_obj_set_style_pad_gap(g_page2, 6, 0);
-  lv_obj_set_flex_flow(g_page2, LV_FLEX_FLOW_COLUMN);
-  lv_obj_set_flex_align(g_page2, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-
-  // Time at top (smaller font than page 1)
+  // Time at top (smaller font than page 1) — absolute position
   g_sys_time_label = lv_label_create(g_page2);
   lv_obj_set_style_text_font(g_sys_time_label, &lv_font_montserrat_28, 0);
   lv_obj_set_style_text_color(g_sys_time_label, lv_color_hex(0x212121), 0);
   lv_label_set_text(g_sys_time_label, "--:--");
+  lv_obj_set_pos(g_sys_time_label, 20, 12);
 
   // Grid container: 2 columns x 4 rows (leaves room for media bar at bottom)
   lv_obj_t *grid = lv_obj_create(g_page2);
-  lv_obj_set_size(grid, 464, 368);
+  lv_obj_set_pos(grid, 8, 52);
+  lv_obj_set_size(grid, 464, 388);
   lv_obj_set_style_bg_opa(grid, LV_OPA_TRANSP, 0);
   lv_obj_set_style_border_width(grid, 0, 0);
   lv_obj_set_style_pad_all(grid, 0, 0);
@@ -710,7 +709,7 @@ static void create_system_page() {
   lv_obj_set_layout(grid, LV_LAYOUT_GRID);
 
   static int32_t col_dsc[] = {229, 229, LV_GRID_TEMPLATE_LAST};
-  static int32_t row_dsc[] = {86, 86, 86, 86, LV_GRID_TEMPLATE_LAST};
+  static int32_t row_dsc[] = {91, 91, 91, 91, LV_GRID_TEMPLATE_LAST};
   lv_obj_set_style_grid_column_dsc_array(grid, col_dsc, 0);
   lv_obj_set_style_grid_row_dsc_array(grid, row_dsc, 0);
 
