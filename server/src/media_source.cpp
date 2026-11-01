@@ -11,34 +11,70 @@ using namespace winrt;
 using namespace Windows::Media::Control;
 using namespace Windows::Foundation;
 
+// Pimpl holding the WinRT session manager + event subscriptions
+struct MediaSource::Impl {
+    GlobalSystemMediaTransportControlsSessionManager mgr{nullptr};
+    GlobalSystemMediaTransportControlsSession session{nullptr};
+    MediaSource *owner = nullptr;
+};
+
 MediaSource::MediaSource() {
     try {
         winrt::init_apartment();
-    } catch (...) {
-        // already initialized is fine
+        impl_ = new Impl();
+        impl_->owner = this;
+        impl_->mgr = GlobalSystemMediaTransportControlsSessionManager::RequestAsync().get();
+
+        // Event: any session appears/disappears/changes
+        impl_->mgr.SessionsChanged([this](auto &&, auto &&) {
+            changed_ = true;
+            spdlog::debug("Media: SMTC SessionsChanged event");
+        });
+    } catch (const winrt::hresult_error &e) {
+        spdlog::warn("Media: failed to init SMTC: {}", winrt::to_string(e.message()));
+        delete impl_;
+        impl_ = nullptr;
     }
 }
 
-bool MediaSource::update() {
-    try {
-        auto mgr = GlobalSystemMediaTransportControlsSessionManager::RequestAsync().get();
-        auto session = mgr.GetCurrentSession();
+MediaSource::~MediaSource() {
+    delete impl_;
+}
 
+bool MediaSource::update() {
+    if (!impl_ || !impl_->mgr) return false;
+
+    try {
+        auto session = impl_->mgr.GetCurrentSession();
         prev_ = last_;
 
         if (!session) {
             last_ = MediaInfo{};
-            last_.valid = false;
-            last_.state = MEDIA_STOPPED;
             changed_ = prev_.valid || prev_.state != MEDIA_STOPPED || !prev_.title.empty();
             return true;
         }
 
-        // Source app ID (e.g. "Spotify.exe")
+        // Subscribe to per-session events when the session changes
+        if (session != impl_->session) {
+            impl_->session = session;
+            session.PlaybackInfoChanged([this](auto &&, auto &&) {
+                changed_ = true;
+                spdlog::debug("Media: PlaybackInfoChanged event");
+            });
+            session.MediaPropertiesChanged([this](auto &&, auto &&) {
+                changed_ = true;
+                spdlog::debug("Media: MediaPropertiesChanged event");
+            });
+            session.TimelinePropertiesChanged([this](auto &&, auto &&) {
+                // Timeline updates don't need an immediate send — 1s tick covers it
+            });
+        }
+
+        // Source app ID
         std::string source = winrt::to_string(session.SourceAppUserModelId());
         last_.is_spotify = (source.find("Spotify") != std::string::npos);
 
-        // Media properties (title, artist)
+        // Media properties
         auto props = session.TryGetMediaPropertiesAsync().get();
         last_.title  = winrt::to_string(props.Title());
         last_.artist = winrt::to_string(props.Artist());
@@ -54,18 +90,14 @@ bool MediaSource::update() {
                 last_.state = MEDIA_STOPPED; break;
         }
 
-        // Timeline — anchor position with local timestamp for live computation
+        // Timeline — raw position from SMTC
         auto timeline = session.GetTimelineProperties();
-        last_.smtc_position_ms = static_cast<uint32_t>(timeline.Position().count() / 10000);
-        last_.duration_ms      = static_cast<uint32_t>(timeline.EndTime().count() / 10000);
-        last_.sampled_at_ms    = std::chrono::duration_cast<std::chrono::milliseconds>(
-                                     std::chrono::system_clock::now().time_since_epoch()).count();
-        last_.position_ms = last_.smtc_position_ms;
+        last_.position_ms = static_cast<uint32_t>(timeline.Position().count() / 10000);
+        last_.duration_ms = static_cast<uint32_t>(timeline.EndTime().count() / 10000);
 
         last_.valid = true;
 
-        // Detect changes: state, title, artist, or session appeared/disappeared
-        changed_ = (last_.state != prev_.state) ||
+        changed_ = changed_ || (last_.state != prev_.state) ||
                    (last_.title != prev_.title) ||
                    (last_.artist != prev_.artist) ||
                    (last_.valid != prev_.valid);
@@ -80,27 +112,17 @@ bool MediaSource::update() {
     }
 }
 
-uint32_t MediaSource::live_position_ms() const {
-    if (!last_.valid || last_.state != MEDIA_PLAYING) return last_.position_ms;
-    int64_t now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                         std::chrono::system_clock::now().time_since_epoch()).count();
-    int64_t elapsed = now_ms - last_.sampled_at_ms;
-    int64_t pos = (int64_t)last_.smtc_position_ms + elapsed;
-    if (last_.duration_ms > 0 && pos > (int64_t)last_.duration_ms) pos = last_.duration_ms;
-    if (pos < 0) pos = 0;
-    return (uint32_t)pos;
-}
-
 std::vector<uint8_t> MediaSource::build_payload() const {
     MediaMessageBinary hdr{};
     hdr.timestamp_ms = static_cast<uint64_t>(
         std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::system_clock::now().time_since_epoch()).count());
-    hdr.position_ms = const_cast<MediaSource*>(this)->live_position_ms();
+    // Raw SMTC position — ESP32 adds elapsed from timestamp_ms.
+    // Single source of truth for elapsed time = the receiver.
+    hdr.position_ms = last_.position_ms;
     hdr.duration_ms = last_.duration_ms;
     hdr.state = last_.state;
 
-    // Clamp strings to fit in uint8_t length fields
     std::string title  = last_.title.substr(0, 255);
     std::string artist = last_.artist.substr(0, 255);
     hdr.title_len  = static_cast<uint8_t>(title.size());
@@ -109,11 +131,9 @@ std::vector<uint8_t> MediaSource::build_payload() const {
     std::vector<uint8_t> payload;
     payload.resize(sizeof(hdr) + hdr.title_len + hdr.artist_len);
     std::memcpy(payload.data(), &hdr, sizeof(hdr));
-    if (hdr.title_len > 0) {
+    if (hdr.title_len > 0)
         std::memcpy(payload.data() + sizeof(hdr), title.data(), hdr.title_len);
-    }
-    if (hdr.artist_len > 0) {
+    if (hdr.artist_len > 0)
         std::memcpy(payload.data() + sizeof(hdr) + hdr.title_len, artist.data(), hdr.artist_len);
-    }
     return payload;
 }
