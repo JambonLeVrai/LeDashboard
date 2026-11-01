@@ -593,6 +593,7 @@ static SysMetric g_metrics[M_COUNT] = {
 };
 
 static lv_obj_t *g_sys_time_label = nullptr;
+static lv_obj_t *g_sys_date_label = nullptr;
 static lv_obj_t *g_metric_value_labels[M_COUNT] = {nullptr};
 
 static void update_dummy_system() {
@@ -636,11 +637,17 @@ static void update_dummy_system() {
     }
   }
 
-  // Update time label on page 2
+  // Update time + date labels on page 2
   if (g_sys_time_label) {
     char buf[10];
     snprintf(buf, sizeof(buf), "%02d:%02d", current_time.hour, current_time.minute);
     lv_label_set_text(g_sys_time_label, buf);
+  }
+  if (g_sys_date_label) {
+    char buf[12];
+    snprintf(buf, sizeof(buf), "%02d/%02d/%02d",
+             current_time.day, current_time.month, current_time.year % 100);
+    lv_label_set_text(g_sys_date_label, buf);
   }
 }
 
@@ -690,12 +697,21 @@ static void create_system_page() {
   // Semi-transparent white panel over the background (like page 1)
   create_panel(g_page2, 0, 0, 480, 480);
 
-  // Time at top (smaller font than page 1) — absolute position
+  // Time at top-left (smaller font than page 1) — absolute position
   g_sys_time_label = lv_label_create(g_page2);
   lv_obj_set_style_text_font(g_sys_time_label, &lv_font_montserrat_28, 0);
   lv_obj_set_style_text_color(g_sys_time_label, lv_color_hex(0x212121), 0);
   lv_label_set_text(g_sys_time_label, "--:--");
   lv_obj_set_pos(g_sys_time_label, 20, 12);
+
+  // Date at top-right: DD/MM/YY
+  g_sys_date_label = lv_label_create(g_page2);
+  lv_obj_set_style_text_font(g_sys_date_label, &lv_font_montserrat_20, 0);
+  lv_obj_set_style_text_color(g_sys_date_label, lv_color_hex(0x424242), 0);
+  lv_obj_set_style_text_align(g_sys_date_label, LV_TEXT_ALIGN_RIGHT, 0);
+  lv_label_set_text(g_sys_date_label, "--/--/--");
+  lv_obj_set_pos(g_sys_date_label, 300, 18);
+  lv_obj_set_width(g_sys_date_label, 160);
 
   // Grid container: 2 columns x 4 rows (leaves room for media bar at bottom)
   lv_obj_t *grid = lv_obj_create(g_page2);
