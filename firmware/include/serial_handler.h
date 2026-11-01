@@ -29,6 +29,9 @@ typedef void (*weather_handler_t)(const WeatherMessageBinary *weather_msg);
 // is: char title[title_len] + char artist[artist_len].
 typedef void (*media_handler_t)(const MediaMessageBinary *hdr, const char *title, const char *artist);
 
+// Called when a SYSTEM message is received.
+typedef void (*system_handler_t)(const SystemMessageBinary *msg);
+
 // Called when the connection state changes.
 typedef void (*conn_state_handler_t)(connection_state_t new_state);
 
@@ -64,6 +67,7 @@ public:
     void on_time(time_handler_t cb)       { time_handler_ = cb; }
     void on_weather(weather_handler_t cb) { weather_handler_ = cb; }
     void on_media(media_handler_t cb)     { media_handler_ = cb; }
+    void on_system(system_handler_t cb)   { system_handler_ = cb; }
     void on_conn_state(conn_state_handler_t cb) { conn_handler_ = cb; }
 
     // Current connection state
@@ -82,6 +86,7 @@ private:
     time_handler_t time_handler_;
     weather_handler_t weather_handler_;
     media_handler_t media_handler_;
+    system_handler_t system_handler_;
     conn_state_handler_t conn_handler_;
 
     static constexpr uint32_t HB_INTERVAL_MS   = 5000;  // send heartbeat every 5s

@@ -26,6 +26,7 @@ SerialHandler::SerialHandler()
       time_handler_(nullptr),
       weather_handler_(nullptr),
       media_handler_(nullptr),
+      system_handler_(nullptr),
       conn_handler_(nullptr) {}
 
 void SerialHandler::begin(unsigned long baud_rate) {
@@ -130,6 +131,16 @@ void SerialHandler::handle_frame(uint8_t type, const uint8_t *payload, unsigned 
                        reinterpret_cast<const uint8_t *>(DISCOVER_ACK_PAYLOAD),
                        strlen(DISCOVER_ACK_PAYLOAD));
             Serial.printf("[SERIAL] DISCOVER probe received -> sent DISCOVER_ACK\n");
+            break;
+        }
+
+        case MSG_SYSTEM: {
+            if (len >= sizeof(SystemMessageBinary) && system_handler_) {
+                SystemMessageBinary s;
+                memcpy(&s, payload, sizeof(s));
+                system_handler_(&s);
+            }
+            send_ack(MSG_SYSTEM);
             break;
         }
 

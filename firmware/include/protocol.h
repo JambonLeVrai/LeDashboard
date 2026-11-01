@@ -161,6 +161,22 @@ typedef struct {
 #define MEDIA_PAUSED  1
 #define MEDIA_PLAYING 2
 
+// SYSTEM message — resource usage snapshot (22 bytes)
+#pragma pack(push, 1)
+typedef struct {
+    uint64_t timestamp_ms;      // 8
+    uint16_t cpu_x10;           // 2 — CPU % * 10
+    uint16_t cpu_temp_x10;      // 2 — CPU temp °C * 10
+    uint16_t gpu_x10;           // 2
+    uint16_t gpu_temp_x10;      // 2
+    uint16_t ram_used_mb;       // 2
+    uint16_t ram_total_mb;      // 2
+    uint16_t disk_io_x10;       // 2 — disk I/O busy % * 10
+    uint16_t net_up_mbps_x10;   // 2
+    uint16_t net_down_mbps_x10; // 2
+} SystemMessageBinary;
+#pragma pack(pop)
+
 // Discovery (auto-detect peripheral)
 #define MSG_DISCOVER     0x80
 #define MSG_DISCOVER_ACK 0x81

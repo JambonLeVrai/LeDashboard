@@ -104,6 +104,7 @@ void format_date_single_line(char* buffer, size_t size);
 void on_server_time(const TimeMessageBinary *t);
 void on_server_weather(const WeatherMessageBinary *w);
 void on_server_media(const MediaMessageBinary *hdr, const char *title, const char *artist);
+void on_server_system(const SystemMessageBinary *s);
 void on_conn_state(connection_state_t s);
 static void on_tap_detected();
 static lv_obj_t *g_page1;
@@ -575,69 +576,76 @@ struct SysMetric {
 };
 
 // Metrics shown on page 2 (2 columns x 4 rows)
-// Order: CPU%, CPU°C, GPU%, GPU°C, RAM(used/total), Disk I/O%, Net↓, Net↑
+// Real values come from SYSTEM messages; defaults until first message
 enum {
   M_CPU_USAGE, M_CPU_TEMP, M_GPU_USAGE, M_GPU_TEMP,
   M_RAM, M_DISK_IO, M_NET_DOWN, M_NET_UP, M_COUNT
 };
 
 static SysMetric g_metrics[M_COUNT] = {
-  {"CPU",       "%",    30.0f, 30.0f, 0, 1.0f,   "%.0f"},
-  {"CPU Temp",  "°C",   45.0f, 45.0f, 0, 1.0f,   "%.0f"},
-  {"GPU",       "%",    10.0f, 10.0f, 0, 1.0f,   "%.0f"},
-  {"GPU Temp",  "°C",   50.0f, 50.0f, 0, 1.0f,   "%.0f"},
-  {"RAM",       "GB",   16.0f, 48.0f, 0, 1.0f,   "%.1f/%.1f"},  // special: used/total
-  {"Disk I/O",  "%",    15.0f, 15.0f, 0, 1.0f,   "%.0f"},
-  {"Net Down",  "Mbps", 500.0f,500.0f,1, 1.0f,   "%.1f"},
-  {"Net Up",    "Mbps", 50.0f, 50.0f, 1, 1.0f,   "%.1f"},
+  {"CPU",       "%",    0.0f, 0.0f, 0, 1.0f,   "%.0f"},
+  {"CPU Temp",  "°C",   0.0f, 0.0f, 0, 1.0f,   "%.0f"},
+  {"GPU",       "%",    0.0f, 0.0f, 0, 1.0f,   "%.0f"},
+  {"GPU Temp",  "°C",   0.0f, 0.0f, 0, 1.0f,   "%.0f"},
+  {"RAM",       "GB",   0.0f, 0.0f, 0, 1.0f,   "%.1f/%.1f"},  // special: used/total
+  {"Disk I/O",  "%",    0.0f, 0.0f, 0, 1.0f,   "%.0f"},
+  {"Net Down",  "Mbps", 0.0f, 0.0f, 1, 1.0f,   "%.1f"},
+  {"Net Up",    "Mbps", 0.0f, 0.0f, 1, 1.0f,   "%.1f"},
 };
 
 static lv_obj_t *g_sys_time_label = nullptr;
 static lv_obj_t *g_sys_date_label = nullptr;
 static lv_obj_t *g_metric_value_labels[M_COUNT] = {nullptr};
+static uint16_t g_ram_total_mb = 0;  // from server, for RAM display
 
-static void update_dummy_system() {
-  static uint32_t last = 0;
-  uint32_t now = millis();
-  if (now - last < SYS_UPDATE_MS) return;
-  last = now;
+// Called by SerialHandler when a SYSTEM message arrives — updates page 2 metrics
+void on_server_system(const SystemMessageBinary *s) {
+  g_metrics[M_CPU_USAGE].value = s->cpu_x10 / 10.0f;
+  g_metrics[M_CPU_TEMP].value  = s->cpu_temp_x10 / 10.0f;
+  g_metrics[M_GPU_USAGE].value = s->gpu_x10 / 10.0f;
+  g_metrics[M_GPU_TEMP].value  = s->gpu_temp_x10 / 10.0f;
+  g_metrics[M_RAM].value       = s->ram_used_mb / 1024.0f;  // MB → GB
+  g_ram_total_mb               = s->ram_total_mb;
+  g_metrics[M_DISK_IO].value   = s->disk_io_x10 / 10.0f;
+  g_metrics[M_NET_DOWN].value  = s->net_down_mbps_x10 / 10.0f;
+  g_metrics[M_NET_UP].value    = s->net_up_mbps_x10 / 10.0f;
 
+  // Update labels immediately
   for (int i = 0; i < M_COUNT; i++) {
-    // Random walk toward new random target
-    if (random(100) < 25) {
-      float range;
-      switch (i) {
-        case M_CPU_USAGE: case M_GPU_USAGE: range = 100.0f; break;
-        case M_CPU_TEMP: range = 85.0f; break;
-        case M_GPU_TEMP: range = 90.0f; break;
-        case M_RAM:      range = 48.0f; break;  // GB
-        case M_DISK_IO:  range = 100.0f; break;
-        case M_NET_DOWN: range = 1000.0f; break;
-        case M_NET_UP:   range = 100.0f; break;
-        default: range = 100.0f;
-      }
-      g_metrics[i].target = random(0, (long)range);
+    if (!g_metric_value_labels[i]) continue;
+    char buf[40];
+    if (i == M_RAM) {
+      snprintf(buf, sizeof(buf), "%.1f/%.1f GB",
+               g_metrics[i].value, g_ram_total_mb / 1024.0f);
+    } else {
+      snprintf(buf, sizeof(buf), g_metrics[i].fmt, g_metrics[i].value);
+      char full[48];
+      snprintf(full, sizeof(full), "%s %s", buf, g_metrics[i].unit);
+      strncpy(buf, full, sizeof(buf) - 1);
+      buf[sizeof(buf) - 1] = '\0';
     }
-    g_metrics[i].value += (g_metrics[i].target - g_metrics[i].value) * 0.3f;
-
-    // Update label if it exists
-    if (g_metric_value_labels[i]) {
-      char buf[32];
-      if (i == M_RAM) {
-        // RAM: show used/total in GB
-        snprintf(buf, sizeof(buf), "%.1f/%.1f GB", g_metrics[i].value, 48.0f);
-      } else {
-        snprintf(buf, sizeof(buf), g_metrics[i].fmt, g_metrics[i].value * g_metrics[i].scale);
-        char full[40];
-        snprintf(full, sizeof(full), "%s %s", buf, g_metrics[i].unit);
-        strncpy(buf, full, sizeof(buf) - 1);
-        buf[sizeof(buf) - 1] = '\0';
-      }
-      lv_label_set_text(g_metric_value_labels[i], buf);
-    }
+    lv_label_set_text(g_metric_value_labels[i], buf);
   }
 
-  // Update time + date labels on page 2
+  // Update time + date on page 2 from the server timestamp
+  if (g_sys_time_label) {
+    // Derive local time from timestamp_ms + tz
+    uint64_t local_ms = s->timestamp_ms; // UTC; tz applied via server_tz_min if needed
+    // Use current_time which is already synced — simpler
+    char tbuf[10];
+    snprintf(tbuf, sizeof(tbuf), "%02d:%02d", current_time.hour, current_time.minute);
+    lv_label_set_text(g_sys_time_label, tbuf);
+  }
+  if (g_sys_date_label) {
+    char dbuf[12];
+    snprintf(dbuf, sizeof(dbuf), "%02d/%02d/%02d",
+             current_time.day, current_time.month, current_time.year % 100);
+    lv_label_set_text(g_sys_date_label, dbuf);
+  }
+}
+
+// Called every loop — just refresh time/date on page 2 (metrics update on SYSTEM receipt)
+static void update_dummy_system() {
   if (g_sys_time_label) {
     char buf[10];
     snprintf(buf, sizeof(buf), "%02d:%02d", current_time.hour, current_time.minute);
@@ -764,34 +772,35 @@ static uint32_t current_position_ms() {
   return (uint32_t)pos;
 }
 
-// Start the scroll animation at fixed speed, then handle end-pause and loop
+// Start the scroll animation at fixed speed, then handle end-pause and loop.
+// Drives BOTH pages' title labels so switching pages doesn't stutter.
 void start_title_scroll() {
-  if (g_title_label[g_current_page] == nullptr || g_title_scroll_dist <= 0) return;
-  
-  // Fixed speed: duration = distance / speed
+  if (g_title_scroll_dist <= 0) return;
+
   int32_t duration_ms = (g_title_scroll_dist * 1000) / TITLE_SCROLL_SPEED_PX_S;
-  if (duration_ms < 1000) duration_ms = 1000; // minimum 1s
-  
+  if (duration_ms < 1000) duration_ms = 1000;
+
   lv_anim_t a;
   lv_anim_init(&a);
-  lv_anim_set_var(&a, g_title_label[g_current_page]);
-  lv_anim_set_exec_cb(&a, [](void* var, int32_t v) {
-    lv_obj_set_x((lv_obj_t*)var, v);
+  lv_anim_set_var(&a, (void *)1);  // dummy var — we set both labels in the callback
+  lv_anim_set_exec_cb(&a, [](void *, int32_t v) {
+    for (int p = 0; p < 2; p++) {
+      if (g_title_label[p]) lv_obj_set_x(g_title_label[p], v);
+    }
   });
   lv_anim_set_values(&a, 0, -g_title_scroll_dist);
-  lv_anim_set_duration(&a, duration_ms); // Fixed speed, variable duration
+  lv_anim_set_duration(&a, duration_ms);
   lv_anim_set_delay(&a, 0);
   lv_anim_set_playback_duration(&a, 0);
   lv_anim_set_repeat_count(&a, 1);
   lv_anim_set_path_cb(&a, lv_anim_path_linear);
-  lv_anim_set_completed_cb(&a, [](lv_anim_t* anim) {
-    // Scroll finished: text is at the end. Pause 2s showing the end.
-    lv_timer_create([](lv_timer_t* t) {
+  lv_anim_set_completed_cb(&a, [](lv_anim_t *anim) {
+    lv_timer_create([](lv_timer_t *t) {
       lv_timer_delete(t);
-      // Pop back to start instantly
-      lv_obj_set_x(g_title_label[g_current_page], 0);
-      // Pause 2s at start, then scroll again
-      lv_timer_create([](lv_timer_t* t2) {
+      for (int p = 0; p < 2; p++) {
+        if (g_title_label[p]) lv_obj_set_x(g_title_label[p], 0);
+      }
+      lv_timer_create([](lv_timer_t *t2) {
         lv_timer_delete(t2);
         start_title_scroll();
       }, TITLE_PAUSE_MS, nullptr);
@@ -1012,6 +1021,7 @@ void setup()
   g_serial.on_time(on_server_time);
   g_serial.on_weather(on_server_weather);
   g_serial.on_media(on_server_media);
+  g_serial.on_system(on_server_system);
   g_serial.on_conn_state(on_conn_state);
   g_serial.begin(115200);
 
