@@ -9,6 +9,8 @@
 #include <atomic>
 #include <chrono>
 #include <mutex>
+#include <queue>
+#include <utility>
 
 // =============================================================================
 // DashboardServer — main server logic
@@ -50,10 +52,19 @@ private:
     void send_ack(MsgType acked_type);
     void send_nack(MsgType nacked_type, uint8_t error_code);
 
-    // Incoming data handler (called from SerialPort read thread)
+    // Incoming data handler (called from SerialPort read thread).
+    // Only parses and queues responses — never writes to serial directly.
     void on_serial_data(const uint8_t *data, size_t len);
     void on_frame(const DecodedFrame &frame);
     void on_decode_error(uint8_t error_code, uint8_t msg_type);
+
+    // Queue a response frame to be sent by the main loop
+    void queue_response(MsgType type, const uint8_t *payload, size_t len);
+    void queue_response(MsgType type, const std::vector<uint8_t> &payload) {
+        queue_response(type, payload.data(), payload.size());
+    }
+    // Drain and send all queued responses (called from main loop only)
+    void flush_responses();
 
     // Build a TIME message from the current system time
     TimeMessageBinary build_time_message() const;
@@ -71,15 +82,15 @@ private:
     std::chrono::steady_clock::time_point last_hb_received_;
     std::chrono::steady_clock::time_point last_time_sent_;
     std::chrono::steady_clock::time_point last_media_sent_;
-    std::chrono::steady_clock::time_point last_media_poll_;
 
     static constexpr auto HB_INTERVAL      = std::chrono::seconds(5);
     static constexpr auto TIME_INTERVAL    = std::chrono::seconds(1);
     static constexpr auto MEDIA_INTERVAL   = std::chrono::seconds(1);  // timer tick
-    static constexpr auto MEDIA_POLL       = std::chrono::milliseconds(200); // SMTC poll + event check
     static constexpr auto HB_TIMEOUT       = std::chrono::seconds(15);
     // Weather: send only after a refetch (or once on connect), not on a timer
     std::atomic<bool> weather_dirty_{true};  // true = send WEATHER on next loop
 
-    std::mutex send_mutex_;
+    std::mutex send_mutex_;       // protects serial writes (main loop only)
+    std::mutex queue_mutex_;      // protects the response queue
+    std::queue<std::pair<MsgType, std::vector<uint8_t>>> response_queue_;
 };

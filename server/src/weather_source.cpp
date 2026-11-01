@@ -85,20 +85,40 @@ bool WeatherSource::geocode(const std::string &location) {
 }
 
 // =============================================================================
-// Update
+// Background fetch thread
 // =============================================================================
 
-bool WeatherSource::needs_update() const {
-    if (!has_data_) return true;
-    return std::chrono::steady_clock::now() - last_update_ >= update_interval_;
+void WeatherSource::start() {
+    if (running_) return;
+    running_ = true;
+    thread_ = std::thread(&WeatherSource::fetch_loop, this);
 }
 
-bool WeatherSource::update() {
-    if (!fetch_forecast()) return false;
-    fetch_air_quality(); // non-fatal if it fails; updates last_msg_.air_quality
+void WeatherSource::stop() {
+    running_ = false;
+    if (thread_.joinable()) thread_.join();
+}
 
-    // Log after both fetches so AQI is included
+void WeatherSource::fetch_loop() {
+    // Fetch immediately on start, then every hour
+    while (running_) {
+        if (do_update()) {
+            std::lock_guard<std::mutex> lock(mutex_);
+            dirty_ = true;
+        }
+        // Sleep in small increments so stop() is responsive
+        for (int i = 0; i < 3600 && running_; i++) {
+            std::this_thread::sleep_for(std::chrono::seconds(1));
+        }
+    }
+}
+
+bool WeatherSource::do_update() {
+    if (!fetch_forecast()) return false;
+    fetch_air_quality(); // non-fatal
+
     {
+        std::lock_guard<std::mutex> lock(mutex_);
         auto &m = last_msg_;
         spdlog::info("Weather NOW:  {:.1f}C (feels {:.1f}C), RH {}%, wind {:.1f} m/s @ {}°, cond={}, UV={}, AQI={}, P={:.1f}hPa",
                      m.temp_x10 / 10.0, m.feels_like_x10 / 10.0, m.humidity,
@@ -106,10 +126,8 @@ bool WeatherSource::update() {
                      m.uv_index, m.air_quality, m.pressure_x10 / 10.0);
         spdlog::info("Weather TMROW: {:.1f}/{:.1f}C, cond={}",
                      m.tomorrow_min_x10 / 10.0, m.tomorrow_max_x10 / 10.0, m.tomorrow_condition);
+        has_data_ = true;
     }
-
-    last_update_ = std::chrono::steady_clock::now();
-    has_data_ = true;
     return true;
 }
 

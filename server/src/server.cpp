@@ -12,6 +12,8 @@ DashboardServer::DashboardServer()
 
 DashboardServer::~DashboardServer() {
     stop();
+    weather_.stop();
+    media_.stop();
     serial_.close();
 }
 
@@ -26,11 +28,11 @@ bool DashboardServer::initialize(const std::string &port_name, uint32_t baud_rat
         on_serial_data(data, len);
     });
 
-    // Initialize weather source (non-fatal if it fails — we just won't send weather)
+    // Initialize weather source — starts its own background fetch thread
     if (!weather_.initialize(weather_location)) {
         spdlog::warn("Weather source init failed: {} — continuing without weather", weather_.last_error());
     } else {
-        weather_.set_update_interval(std::chrono::seconds(3600)); // refetch every 1 hour
+        weather_.start(); // background thread, fetches immediately then hourly
     }
 
     auto now = std::chrono::steady_clock::now();
@@ -38,7 +40,9 @@ bool DashboardServer::initialize(const std::string &port_name, uint32_t baud_rat
     last_hb_received_   = now;
     last_time_sent_     = now - TIME_INTERVAL;
     last_media_sent_    = now - MEDIA_INTERVAL;
-    last_media_poll_    = now - MEDIA_POLL;
+
+    // Start media polling thread (runs independently, doesn't block main loop)
+    media_.start();
 
     spdlog::info("DashboardServer initialized on {} @ {} (weather: {})", port_name, baud_rate, weather_location);
     return true;
@@ -50,6 +54,9 @@ void DashboardServer::run() {
 
     while (running_) {
         auto now = std::chrono::steady_clock::now();
+
+        // Send any queued responses from the read thread (ACKs, TIME sync, etc.)
+        flush_responses();
 
         // Send heartbeat
         if (now - last_hb_sent_ >= HB_INTERVAL) {
@@ -63,29 +70,21 @@ void DashboardServer::run() {
             last_time_sent_ = now;
         }
 
-        // Poll SMTC every 500ms for state changes; send MEDIA every 1s for timer,
-        // or immediately if state/track changed
-        if (now - last_media_poll_ >= MEDIA_POLL) {
-            media_.update();
-            last_media_poll_ = now;
-            if (media_.changed()) {
-                spdlog::info("Media changed: state={} \"{}\" — \"{}\"",
-                             media_.last().state, media_.last().title, media_.last().artist);
-                send_media();
-                last_media_sent_ = now;
-                media_.clear_changed();
-            }
+        // Media: send immediately on state/track change, otherwise every 1s for timer
+        if (media_.changed()) {
+            send_media();
+            last_media_sent_ = now;
+            media_.clear_changed();
         }
         if (now - last_media_sent_ >= MEDIA_INTERVAL) {
             send_media();
             last_media_sent_ = now;
         }
 
-        // Update weather from API if needed (hourly), then send only if data changed
-        if (weather_.needs_update()) {
-            if (weather_.update()) {
-                weather_dirty_ = true;  // new data → send WEATHER frame once
-            }
+        // Weather: send when new data arrives from the background thread
+        if (weather_.dirty() && weather_.has_data()) {
+            weather_dirty_ = true;
+            weather_.clear_dirty();
         }
         if (weather_dirty_ && weather_.has_data()) {
             send_weather();
@@ -116,8 +115,7 @@ void DashboardServer::stop() {
 
 void DashboardServer::send_frame(MsgType type, const uint8_t *payload, size_t len) {
     auto frame = encode_frame(type, payload, len);
-    std::lock_guard<std::mutex> lock(send_mutex_);
-    serial_.write(frame);
+    serial_.write(frame); // queued, non-blocking
 }
 
 void DashboardServer::send_heartbeat() {
@@ -177,7 +175,7 @@ void DashboardServer::send_time() {
 }
 
 void DashboardServer::send_weather() {
-    const auto &w = weather_.last_message();
+    auto w = weather_.last_message();
     send_frame(MsgType::WEATHER, reinterpret_cast<const uint8_t *>(&w), sizeof(w));
     spdlog::debug("-> WEATHER temp={:.1f}C feels={:.1f}C RH={}% cond={} UV={} AQI={} "
                   "tmr={:.1f}/{:.1f}C cond={}",
@@ -190,7 +188,7 @@ void DashboardServer::send_weather() {
 void DashboardServer::send_media() {
     auto payload = media_.build_payload();
     send_frame(MsgType::MEDIA, payload);
-    const auto &m = media_.last();
+    auto m = media_.snapshot();
     if (m.valid) {
         spdlog::debug("-> MEDIA state={} pos={}ms/{}ms \"{}\" — \"{}\"{}",
                       m.state, m.position_ms, m.duration_ms,
@@ -226,6 +224,23 @@ void DashboardServer::on_serial_data(const uint8_t *data, size_t len) {
     decoder_.feed(data, len);
 }
 
+void DashboardServer::queue_response(MsgType type, const uint8_t *payload, size_t len) {
+    std::lock_guard<std::mutex> lock(queue_mutex_);
+    response_queue_.emplace(type, std::vector<uint8_t>(payload, payload + len));
+}
+
+void DashboardServer::flush_responses() {
+    std::queue<std::pair<MsgType, std::vector<uint8_t>>> q;
+    {
+        std::lock_guard<std::mutex> lock(queue_mutex_);
+        q.swap(response_queue_);
+    }
+    while (!q.empty()) {
+        send_frame(q.front().first, q.front().second);
+        q.pop();
+    }
+}
+
 void DashboardServer::on_frame(const DecodedFrame &frame) {
     const char *type_name = "UNKNOWN";
     switch (frame.type) {
@@ -253,16 +268,15 @@ void DashboardServer::on_frame(const DecodedFrame &frame) {
             last_hb_received_ = std::chrono::steady_clock::now();
             if (!connected_) {
                 connected_ = true;
-                weather_dirty_ = true;  // send weather on connect
-                send_time();            // sync time immediately
-                media_.update();
-                send_media();           // send media state immediately
-                spdlog::info("ESP32 connected (heartbeat received, time+weather+media sent)");
+                weather_dirty_ = true;
+                // Queue TIME + MEDIA for immediate send by main loop
+                TimeMessageBinary t = build_time_message();
+                queue_response(MsgType::TIME, reinterpret_cast<const uint8_t *>(&t), sizeof(t));
+                queue_response(MsgType::MEDIA, media_.build_payload());
+                spdlog::info("ESP32 connected (heartbeat received, time+weather+media queued)");
             }
             uint8_t seq = frame.payload.size() > 0 ? frame.payload[0] : 0;
             spdlog::debug("   HEARTBEAT seq={}", seq);
-            // Do NOT echo — server only sends its own periodic heartbeat every 5s.
-            // The ESP32 echoes our heartbeat, which is how we detect it's alive.
             break;
         }
 
@@ -285,12 +299,16 @@ void DashboardServer::on_frame(const DecodedFrame &frame) {
             if (!frame.payload.empty()) {
                 uint8_t req = frame.payload[0];
                 spdlog::info("   REQUEST type={}", req);
-                // 0x01 = time sync request
                 if (req == 0x01) {
-                    send_time();
+                    // Queue TIME sync response
+                    TimeMessageBinary t = build_time_message();
+                    queue_response(MsgType::TIME, reinterpret_cast<const uint8_t *>(&t), sizeof(t));
                 }
             }
-            send_ack(MsgType::MSG_REQUEST);
+            AckMessage ack{};
+            ack.acked_type = static_cast<uint8_t>(MsgType::MSG_REQUEST);
+            ack.sequence = 0;
+            queue_response(MsgType::ACK, reinterpret_cast<const uint8_t *>(&ack), sizeof(ack));
             break;
         }
 
@@ -300,18 +318,26 @@ void DashboardServer::on_frame(const DecodedFrame &frame) {
                 uint16_t y = (frame.payload[3] << 8) | frame.payload[4];
                 spdlog::info("   TOUCH event={} x={} y={}", frame.payload[0], x, y);
             }
-            send_ack(MsgType::MSG_TOUCH);
+            AckMessage ack{};
+            ack.acked_type = static_cast<uint8_t>(MsgType::MSG_TOUCH);
+            queue_response(MsgType::ACK, reinterpret_cast<const uint8_t *>(&ack), sizeof(ack));
             break;
         }
 
-        default:
-            // ACK any other valid frame
-            send_ack(frame.type);
+        default: {
+            AckMessage ack{};
+            ack.acked_type = static_cast<uint8_t>(frame.type);
+            queue_response(MsgType::ACK, reinterpret_cast<const uint8_t *>(&ack), sizeof(ack));
             break;
+        }
     }
 }
 
 void DashboardServer::on_decode_error(uint8_t error_code, uint8_t msg_type) {
-    spdlog::warn("CRC error on type=0x{:02X} -> NACK", msg_type);
-    send_nack(static_cast<MsgType>(msg_type), error_code);
+    spdlog::warn("CRC error on type=0x{:02X}", msg_type);
+    NackMessage nack{};
+    nack.nacked_type = msg_type;
+    nack.error_code  = error_code;
+    nack.sequence    = 0;
+    queue_response(MsgType::NACK, reinterpret_cast<const uint8_t *>(&nack), sizeof(nack));
 }

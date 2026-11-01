@@ -62,13 +62,13 @@ bool SerialPort::open(const std::string &port_name, uint32_t baud_rate) {
         return false;
     }
 
-    // Timeouts: return immediately if no data
+    // Timeouts: non-blocking writes (drop if buffer full — next frame comes in 1s)
     COMMTIMEOUTS timeouts = {};
-    timeouts.ReadIntervalTimeout         = 50;   // ms between chars
-    timeouts.ReadTotalTimeoutConstant    = 50;   // ms total
-    timeouts.ReadTotalTimeoutMultiplier  = 10;   // ms per byte
-    timeouts.WriteTotalTimeoutConstant   = 1000;
-    timeouts.WriteTotalTimeoutMultiplier  = 10;
+    timeouts.ReadIntervalTimeout         = 10;
+    timeouts.ReadTotalTimeoutConstant    = 10;
+    timeouts.ReadTotalTimeoutMultiplier  = 1;
+    timeouts.WriteTotalTimeoutConstant   = 0;   // non-blocking writes
+    timeouts.WriteTotalTimeoutMultiplier  = 0;
 
     if (!SetCommTimeouts(handle_, &timeouts)) {
         spdlog::error("SerialPort: SetCommTimeouts failed (error {})", GetLastError());
@@ -83,6 +83,7 @@ bool SerialPort::open(const std::string &port_name, uint32_t baud_rate) {
     is_open_ = true;
     stop_requested_ = false;
     read_thread_ = std::thread(&SerialPort::read_thread_fn, this);
+    write_thread_ = std::thread(&SerialPort::write_thread_fn, this);
 
     spdlog::info("SerialPort: opened {} @ {} baud", port_name, baud_rate);
     return true;
@@ -94,14 +95,14 @@ void SerialPort::close() {
     stop_requested_ = true;
     is_open_ = false;
 
-    // Cancel any pending I/O to unblock the read thread
+    write_cv_.notify_all();
+
     if (handle_ != INVALID_HANDLE_VALUE) {
         CancelIo(handle_);
     }
 
-    if (read_thread_.joinable()) {
-        read_thread_.join();
-    }
+    if (read_thread_.joinable()) read_thread_.join();
+    if (write_thread_.joinable()) write_thread_.join();
 
     if (handle_ != INVALID_HANDLE_VALUE) {
         CloseHandle(handle_);
@@ -111,15 +112,39 @@ void SerialPort::close() {
     spdlog::info("SerialPort: closed {}", port_name_);
 }
 
-size_t SerialPort::write(const uint8_t *data, size_t len) {
-    if (!is_open_ || handle_ == INVALID_HANDLE_VALUE) return 0;
-
-    DWORD written = 0;
-    if (!WriteFile(handle_, data, static_cast<DWORD>(len), &written, nullptr)) {
-        spdlog::error("SerialPort: WriteFile failed (error {})", GetLastError());
-        return 0;
+bool SerialPort::write(const uint8_t *data, size_t len) {
+    if (!is_open_) return false;
+    {
+        std::lock_guard<std::mutex> lock(write_mutex_);
+        if (write_queue_.size() >= MAX_WRITE_QUEUE) {
+            write_queue_.pop(); // drop oldest
+        }
+        write_queue_.emplace(data, data + len);
     }
-    return written;
+    write_cv_.notify_one();
+    return true;
+}
+
+void SerialPort::write_thread_fn() {
+    while (!stop_requested_ || !is_open_) {
+        std::vector<uint8_t> frame;
+        {
+            std::unique_lock<std::mutex> lock(write_mutex_);
+            write_cv_.wait_for(lock, std::chrono::milliseconds(100), [this] {
+                return stop_requested_ || !write_queue_.empty();
+            });
+            if (stop_requested_) break;
+            if (write_queue_.empty()) continue;
+            frame = std::move(write_queue_.front());
+            write_queue_.pop();
+        }
+
+        if (handle_ != INVALID_HANDLE_VALUE && !frame.empty()) {
+            DWORD written = 0;
+            // Blocking write is OK here — only this thread does WriteFile
+            WriteFile(handle_, frame.data(), static_cast<DWORD>(frame.size()), &written, nullptr);
+        }
+    }
 }
 
 void SerialPort::set_data_callback(DataCallback cb) {

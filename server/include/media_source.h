@@ -4,22 +4,25 @@
 #include <string>
 #include <cstdint>
 #include <vector>
-
-// Forward-declare WinRT types to avoid pulling headers into this .h
-namespace winrt::Windows::Media::Control {
-    struct GlobalSystemMediaTransportControlsSessionManager;
-    struct GlobalSystemMediaTransportControlsSession;
-}
+#include <atomic>
+#include <thread>
+#include <mutex>
+#include <chrono>
 
 // =============================================================================
 // MediaSource — reads currently-playing media via Windows SMTC
 // =============================================================================
+//
+// Runs its own polling thread. Position is tracked server-side:
+//   - When PLAYING, position advances by wall-clock time between polls
+//   - On state change or track change, position snaps to the SMTC value
+// This avoids relying on SMTC's (often stale/buggy for browsers) position.
 
 struct MediaInfo {
     bool     valid = false;
     bool     is_spotify = false;
     uint8_t  state = MEDIA_STOPPED;
-    uint32_t position_ms = 0;       // raw SMTC position
+    uint32_t position_ms = 0;   // server-tracked position
     uint32_t duration_ms = 0;
     std::string title;
     std::string artist;
@@ -30,21 +33,37 @@ public:
     MediaSource();
     ~MediaSource();
 
-    bool update();
-    const MediaInfo &last() const { return last_; }
-    bool changed() const { return changed_; }
+    // Start the background polling thread (200ms interval)
+    void start();
+    void stop();
+
+    // Snapshot of current media info (thread-safe)
+    MediaInfo snapshot() const;
+
+    // True if state/track changed since last clear_changed() call
+    bool changed() const { return changed_.load(); }
     void clear_changed() { changed_ = false; }
 
-    // Build MEDIA payload: sends raw SMTC position + current timestamp.
-    // ESP32 computes elapsed from timestamp_ms (single source of truth).
+    // Build MEDIA payload with current server timestamp + tracked position
     std::vector<uint8_t> build_payload() const;
 
 private:
-    MediaInfo last_;
-    MediaInfo prev_;
-    bool changed_ = true;
+    void poll_loop();
+    void poll_once(); // single SMTC query + position update
 
-    // Pimpl to hide WinRT types from this header
+    mutable std::mutex mutex_;
+    MediaInfo info_;
+    std::atomic<bool> changed_{true};
+
+    std::atomic<bool> running_{false};
+    std::thread thread_;
+
+    // Position tracking
+    uint32_t tracked_position_ms_ = 0;
+    uint8_t  tracked_state_ = MEDIA_STOPPED;
+    std::chrono::steady_clock::time_point last_poll_time_;
+
+    // Pimpl to hide WinRT types
     struct Impl;
     Impl *impl_ = nullptr;
 };
